@@ -34,6 +34,12 @@ python run.py
 ```
 결과: `dist/AI_Mixing_Studio/AI_Mixing_Studio.exe`
 
+##예시 영상
+
+## 추후 예정
+볼륨 조절 및 방향과 같은 속성의 변화를 어떤 시간에 각각 적용할것인지도 다 저장하여, 시간의 순서에 맞게 속성의 변화를 작업
+텍스트 박스 위치를 드래그로 조정
+
 
 ## Windows 참고 (중요)
 - torchaudio 2.9+는 load/save 구현이 TorchCodec 기반으로 바뀌었습니다. 
