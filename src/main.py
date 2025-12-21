@@ -52,7 +52,7 @@ class VisualizerSettingsDialog(QDialog):
     def __init__(self, parent=None, current_settings=None):
         super().__init__(parent)
         self.setWindowTitle("🎨 Visualizer Settings")
-        self.resize(500, 650)
+        self.resize(500, 700)
         self.setStyleSheet("""
             QDialog { background-color: #2b2b2b; color: white; }
             QLabel, QCheckBox { color: white; }
@@ -102,9 +102,9 @@ class VisualizerSettingsDialog(QDialog):
         self.spin_scale.setSingleStep(0.1)
         self.spin_scale.setSuffix(" x")
 
-        # [수정] 높이 스케일 대폭 확장 (최대 50배)
+        # [Height Scale]
         self.spin_height = QDoubleSpinBox()
-        self.spin_height.setRange(0.1, 50.0) 
+        self.spin_height.setRange(0.1, 100.0) 
         self.spin_height.setSingleStep(0.5)
         self.spin_height.setSuffix(" x")
 
@@ -116,22 +116,34 @@ class VisualizerSettingsDialog(QDialog):
         self.color_top = QColor(0, 255, 255)
 
         self.chk_mask = QCheckBox("Mask Mode (검은 배경 + 스펙트럼 투과)")
+        self.btn_overlay_color = QPushButton("🎨 Overlay Color (Mask BG)")
+        self.btn_overlay_color.clicked.connect(lambda: self.pick_color('overlay'))
+        self.color_overlay = QColor(0, 0, 0)
 
         layout.addRow("🖼 BG Opacity:", self.sld_opacity)
         layout.addRow("📐 Shape:", self.combo_shape)
         layout.addRow("🎨 Style:", self.combo_style)
         layout.addRow("✏ Thickness:", self.spin_thick)
         layout.addRow("🎛 Sensitivity:", self.spin_scale)
-        layout.addRow("📏 Height Scale:", self.spin_height) 
+        layout.addRow("📏 Max Height:", self.spin_height) 
         layout.addRow("🌈 Grad Start:", self.btn_color_bot)
         layout.addRow("🌈 Grad End:", self.btn_color_top)
-        layout.addRow("", self.chk_mask)
+        layout.addRow(self.chk_mask)
+        layout.addRow("⬛ Mask BG Color:", self.btn_overlay_color)
 
     def _init_text_tab(self):
         layout = QVBoxLayout(self.tab_text)
         
-        # [NEW] Text Mask Option
-        self.chk_text_mask = QCheckBox("Mask Text (텍스트 투명 처리 / 배경 비침)")
+        # [FIXED] Use QHBoxLayout instead of addRow (which is for FormLayout)
+        h_opacity = QHBoxLayout()
+        h_opacity.addWidget(QLabel("Text Opacity:"))
+        self.sld_text_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sld_text_opacity.setRange(0, 100)
+        self.sld_text_opacity.setValue(100)
+        h_opacity.addWidget(self.sld_text_opacity)
+        layout.addLayout(h_opacity)
+
+        self.chk_text_mask = QCheckBox("Mask Text (텍스트 투명화/배경 비침)")
         layout.addWidget(self.chk_text_mask)
 
         # Title Group
@@ -143,10 +155,9 @@ class VisualizerSettingsDialog(QDialog):
         
         self.font_title = QFontComboBox()
         self.spin_title_size = QSpinBox()
-        self.spin_title_size.setRange(8, 300)
+        self.spin_title_size.setRange(8, 500)
         self.spin_title_size.setValue(60)
         
-        # [NEW] Position X, Y
         self.spin_title_x = QSpinBox()
         self.spin_title_x.setRange(0, 3000)
         self.spin_title_x.setValue(50)
@@ -179,10 +190,9 @@ class VisualizerSettingsDialog(QDialog):
         
         self.font_sub = QFontComboBox()
         self.spin_sub_size = QSpinBox()
-        self.spin_sub_size.setRange(8, 300)
+        self.spin_sub_size.setRange(8, 500)
         self.spin_sub_size.setValue(30)
 
-        # [NEW] Position X, Y
         self.spin_sub_x = QSpinBox()
         self.spin_sub_x.setRange(0, 3000)
         self.spin_sub_x.setValue(50)
@@ -205,7 +215,6 @@ class VisualizerSettingsDialog(QDialog):
         form_s.addRow("", self.chk_sub_italic)
         form_s.addRow("Color:", self.btn_sub_color)
         layout.addWidget(grp_sub)
-        
         layout.addStretch()
 
     def _load_settings(self, s):
@@ -219,11 +228,15 @@ class VisualizerSettingsDialog(QDialog):
         
         c_bot = s.get('color_bot')
         c_top = s.get('color_top')
+        c_ov = s.get('color_overlay')
         if c_bot: self.color_bot = c_bot
         if c_top: self.color_top = c_top
+        if c_ov: self.color_overlay = c_ov
         self.update_color_buttons()
         self.chk_mask.setChecked(s.get('mask_mode', False))
 
+        # Text Settings
+        self.sld_text_opacity.setValue(int(s.get('text_opacity', 1.0) * 100))
         self.chk_text_mask.setChecked(s.get('text_mask_mode', False))
         
         t_set = s.get('title', {})
@@ -249,16 +262,21 @@ class VisualizerSettingsDialog(QDialog):
         self.btn_sub_color.setStyleSheet(f"background: {self.color_sub.name()}; color: black;")
 
     def pick_color(self, target):
-        init_color = self.color_bot if target == 'bot' else self.color_top
-        c = QColorDialog.getColor(init_color, self, f"Pick {target.capitalize()} Color")
+        if target == 'bot': init = self.color_bot
+        elif target == 'top': init = self.color_top
+        else: init = self.color_overlay
+
+        c = QColorDialog.getColor(init, self, f"Pick Color")
         if c.isValid():
             if target == 'bot': self.color_bot = c
-            else: self.color_top = c
+            elif target == 'top': self.color_top = c
+            else: self.color_overlay = c
             self.update_color_buttons()
 
     def update_color_buttons(self):
         self.btn_color_bot.setStyleSheet(f"background-color: {self.color_bot.name()}; color: {'black' if self.color_bot.lightness() > 128 else 'white'};")
         self.btn_color_top.setStyleSheet(f"background-color: {self.color_top.name()}; color: {'black' if self.color_top.lightness() > 128 else 'white'};")
+        self.btn_overlay_color.setStyleSheet(f"background-color: {self.color_overlay.name()}; color: {'black' if self.color_overlay.lightness() > 128 else 'white'};")
 
     def pick_text_color(self, target):
         init = self.color_title if target == 'title' else self.color_sub
@@ -275,7 +293,6 @@ class VisualizerSettingsDialog(QDialog):
         shape_idx = self.combo_shape.currentIndex()
         shapes = ['linear', 'circular', 'polygon']
         return {
-            # Spectrum
             'bg_opacity': self.sld_opacity.value() / 100.0,
             'shape': shapes[shape_idx],
             'draw_mode': 'bar' if self.combo_style.currentIndex() == 0 else 'line',
@@ -284,9 +301,9 @@ class VisualizerSettingsDialog(QDialog):
             'height_scale': self.spin_height.value(),
             'color_bot': self.color_bot,
             'color_top': self.color_top,
+            'color_overlay': self.color_overlay,
             'mask_mode': self.chk_mask.isChecked(),
-            
-            # Text
+            'text_opacity': self.sld_text_opacity.value() / 100.0,
             'text_mask_mode': self.chk_text_mask.isChecked(),
             'title': {
                 'text': self.edit_title.currentText(),
@@ -310,7 +327,7 @@ class VisualizerSettingsDialog(QDialog):
             }
         }
 
-# --- Visualizer Screen ---
+# --- Visualizer Screen (Unified) ---
 class VisualizerScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -339,9 +356,11 @@ class VisualizerScreen(QWidget):
         self.height_scale = 1.0
         self.color_bot = QColor(0, 0, 255)
         self.color_top = QColor(0, 255, 255)
+        self.color_overlay = QColor(0, 0, 0)
         self.mask_mode = False 
         
         # Text Settings
+        self.text_opacity = 1.0
         self.text_mask_mode = False
         self.title_cfg = {'text': '', 'size': 60, 'x': 50, 'y': 100, 'color': QColor('white')}
         self.sub_cfg = {'text': '', 'size': 30, 'x': 50, 'y': 160, 'color': QColor('lightgray')}
@@ -360,8 +379,10 @@ class VisualizerScreen(QWidget):
         self.height_scale = s.get('height_scale', 1.0)
         self.color_bot = s.get('color_bot', QColor(0, 0, 255))
         self.color_top = s.get('color_top', QColor(0, 255, 255))
+        self.color_overlay = s.get('color_overlay', QColor(0, 0, 0))
         self.mask_mode = s.get('mask_mode', False)
         
+        self.text_opacity = s.get('text_opacity', 1.0)
         self.text_mask_mode = s.get('text_mask_mode', False)
         self.title_cfg = s.get('title', {})
         self.sub_cfg = s.get('subtitle', {})
@@ -377,7 +398,9 @@ class VisualizerScreen(QWidget):
             'height_scale': self.height_scale,
             'color_bot': self.color_bot,
             'color_top': self.color_top,
+            'color_overlay': self.color_overlay,
             'mask_mode': self.mask_mode,
+            'text_opacity': self.text_opacity,
             'text_mask_mode': self.text_mask_mode,
             'title': self.title_cfg,
             'subtitle': self.sub_cfg
@@ -432,7 +455,7 @@ class VisualizerScreen(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         w, h = self.width(), self.height()
 
-        # 1. Background (Video/Image)
+        # 1. Background
         p.fillRect(0, 0, w, h, QColor(0, 0, 0))
 
         if self.use_bg_image and self.bg_pixmap:
@@ -450,22 +473,19 @@ class VisualizerScreen(QWidget):
             p.drawImage(sx, sy, scaled)
             p.setOpacity(1.0)
 
-        # Prepare Overlays (Spectrum & Text)
-        # We need a buffer if ANY masking is enabled
-        need_mask_buffer = self.mask_mode or self.text_mask_mode
+        # 2. Composition (Spectrum & Text)
+        need_masking = self.mask_mode or self.text_mask_mode
         
-        if need_mask_buffer:
+        if need_masking:
             buffer = QPixmap(w, h)
             buffer.fill(Qt.GlobalColor.transparent)
             pb = QPainter(buffer)
             pb.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            # Fill Black Overlay if masking is active
-            # (If user wants ONLY text mask but not spectrum mask, logic gets complex. 
-            #  Here we assume "Mask Mode" enables the black overlay for both)
-            pb.fillRect(0, 0, w, h, QColor(0, 0, 0, 255))
+            if self.mask_mode:
+                pb.fillRect(0, 0, w, h, self.color_overlay)
             
-            # Draw Spectrum (Cutout or Color)
+            # Draw Spectrum
             if self.show_spectrum:
                 decay_data = self._process_fft()
                 draw_w = w * 0.6
@@ -477,12 +497,11 @@ class VisualizerScreen(QWidget):
                 if self.mask_mode:
                     pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
                     self._draw_shape(pb, draw_rect, decay_data, is_mask=True)
-                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver) # Reset
+                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
                 else:
-                    # Draw normal colored spectrum on top of black overlay
                     self._draw_shape(pb, draw_rect, decay_data, is_mask=False)
 
-            # Draw Text (Cutout or Color)
+            # Draw Text
             if self.text_mask_mode:
                 pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
                 self._draw_text_internal(pb, w, h, is_mask=True)
@@ -494,7 +513,6 @@ class VisualizerScreen(QWidget):
             p.drawPixmap(0, 0, buffer)
 
         else:
-            # No Masking -> Draw directly
             if self.show_spectrum:
                 decay_data = self._process_fft()
                 draw_w = w * 0.6
@@ -521,7 +539,13 @@ class VisualizerScreen(QWidget):
 
         if self.draw_mode == 'bar':
             p.setBrush(brush)
-            p.setPen(Qt.PenStyle.NoPen)
+            # [FIXED] Force Visible Pen for Circular Bar
+            if self.shape != 'linear':
+                pen = QPen(pen_color)
+                pen.setWidth(self.thickness)
+                p.setPen(pen)
+            else:
+                p.setPen(Qt.PenStyle.NoPen)
         else:
             p.setBrush(Qt.BrushStyle.NoBrush)
             pen = QPen(pen_color)
@@ -545,14 +569,14 @@ class VisualizerScreen(QWidget):
             gap = max(0, int(total_w * (1 - (self.thickness / 50.0))))
             bar_w = max(1, total_w - gap)
             for i in range(count):
-                bh = min(h * 2.0, data[i]) 
+                bh = min(h * 5.0, data[i]) 
                 x = rect.x() + i * total_w + (gap/2)
                 y = rect.y() + h - bh
                 p.drawRect(QRectF(x, y, bar_w, bh))
         else:
             points = []
             for i in range(count):
-                bh = min(h * 2.0, data[i])
+                bh = min(h * 5.0, data[i])
                 x = rect.x() + i * total_w + (total_w/2)
                 y = rect.y() + h - bh
                 points.append(QPointF(x, y))
@@ -568,7 +592,7 @@ class VisualizerScreen(QWidget):
         points = []
         
         for i in range(count):
-            mag = min(max_r * 1.5, data[i]) 
+            mag = data[i] 
             angle = -math.pi / 2 + (i * angle_step)
             r_out = base_r + mag
             x_start = cx + math.cos(angle) * base_r
@@ -580,15 +604,16 @@ class VisualizerScreen(QWidget):
                 bar_pen = p.pen()
                 bar_pen.setWidth(self.thickness)
                 if p.brush().style() != Qt.BrushStyle.NoBrush:
-                     grad_pos = mag / (max_r - base_r) if max_r > base_r else 0
+                     grad_pos = min(1.0, mag / max_r)
                      lerped_color = QColor(
                          int(self.color_bot.red() + (self.color_top.red() - self.color_bot.red()) * grad_pos),
                          int(self.color_bot.green() + (self.color_top.green() - self.color_bot.green()) * grad_pos),
                          int(self.color_bot.blue() + (self.color_top.blue() - self.color_bot.blue()) * grad_pos)
                      )
                      bar_pen.setColor(lerped_color)
+                else:
+                    bar_pen.setColor(self.color_top)
                 
-                bar_pen.setStyle(Qt.PenStyle.SolidLine)
                 p.setPen(bar_pen)
                 p.drawLine(QPointF(x_start, y_start), QPointF(x_end, y_end))
             else:
@@ -600,13 +625,15 @@ class VisualizerScreen(QWidget):
                 p.drawPolygon(QPolygonF(points))
             else:
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                line_pen = QPen(p.pen())
+                line_pen = p.pen()
                 line_pen.setStyle(Qt.PenStyle.SolidLine)
                 line_pen.setWidth(self.thickness)
                 p.setPen(line_pen)
                 p.drawPolyline(points)
 
     def _draw_text_internal(self, p: QPainter, w, h, is_mask=False):
+        alpha = int(255 * self.text_opacity)
+        
         # Title
         t_text = self.title_cfg.get('text', '')
         if t_text:
@@ -616,13 +643,14 @@ class VisualizerScreen(QWidget):
             p.setFont(font)
             
             if is_mask:
-                p.setPen(QColor(255, 255, 255, 255)) # Erase logic uses alpha
+                p.setPen(QColor(255, 255, 255, 255)) 
             else:
-                p.setPen(self.title_cfg.get('color', QColor('white')))
+                c = self.title_cfg.get('color', QColor('white'))
+                c.setAlpha(alpha)
+                p.setPen(c)
             
             x = self.title_cfg.get('x', 50)
             y = self.title_cfg.get('y', 100)
-            # Use drawText with exact coordinates (Baseline)
             p.drawText(x, y, t_text)
 
         # Subtitle
@@ -636,7 +664,9 @@ class VisualizerScreen(QWidget):
             if is_mask:
                 p.setPen(QColor(255, 255, 255, 255))
             else:
-                p.setPen(self.sub_cfg.get('color', QColor('lightgray')))
+                c = self.sub_cfg.get('color', QColor('lightgray'))
+                c.setAlpha(alpha)
+                p.setPen(c)
             
             x = self.sub_cfg.get('x', 50)
             y = self.sub_cfg.get('y', 160)
@@ -1080,7 +1110,7 @@ class InspectorPanel(QFrame):
 class StudioMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI Mixing Studio (v28 - Text Masking & Precision XY)")
+        self.setWindowTitle("AI Mixing Studio (v31 - Final Complete Fix)")
         self.resize(1400, 950)
         self.setAcceptDrops(True)
         self.setStyleSheet("""
