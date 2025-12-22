@@ -71,9 +71,6 @@ PowerShell
 .\build_onedir_cpu.bat
 빌드 결과물: dist/AI_Mixing_Studio/AI_Mixing_Studio.exe
 
-⚠️ Windows 호환성 및 기술 노트 (Important)
-Windows 환경에서의 torchaudio 라이브러리 관련 중요 사항입니다.
-
 문제점: torchaudio 2.9+ 버전부터 오디오 로드/저장(Load/Save) 구현이 TorchCodec 기반으로 변경되었습니다. 현재 TorchCodec은 Windows 환경 지원이 불완전하여, 실행 시 Could not load libtorchcodec 오류가 발생할 수 있습니다.
 
 해결책 (v9 적용): 본 프로젝트는 이 문제를 방지하기 위해 torchaudio.load 함수를 직접 사용하지 않습니다. 대신 numpy 및 soundfile/ffmpeg 기반의 로딩 방식을 사용하여 해당 호환성 문제를 우회합니다.
