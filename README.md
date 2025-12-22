@@ -1,76 +1,131 @@
-🎛️ AI Mixing Studio v8 (Full Version)
-AI Mixing Studio는 딥러닝 기반의 음원 분리 및 믹싱 도구입니다. GPU 가속을 지원하며, MP4 영상 파일에서 오디오를 추출하여 작업할 수 있습니다.
+# 🎛️ AI Mixing Studio
 
-✨ 주요 기능 (Key Features)
-⚡ 스마트 하드웨어 가속
+**AI Mixing Studio**는 **딥러닝 기반 음원 분리 및 믹싱 도구**입니다. **GPU 가속(CUDA)** 을 지원하며, **MP4 영상 파일에서 오디오를 자동 추출**해 작업할 수 있습니다.
 
-NVIDIA GPU 사용 가능 시 자동 활성화 (CUDA).
+---
 
-GPU가 없거나 사용 불가능할 경우 자동으로 CPU 모드로 전환됩니다.
+## ✨ 주요 기능 (Key Features)
 
-🎥 미디어 호환성 (MP4 지원)
+### ⚡ 스마트 하드웨어 가속
 
-영상 파일(MP4) 입력 시, 영상 스트림은 제외하고 오디오 트랙만 자동으로 추출하여 AI 분리 및 레이어 작업에 사용합니다.
+* **NVIDIA GPU 사용 가능 시 자동 활성화 (CUDA)**
+* GPU가 없거나 사용 불가능하면 **자동으로 CPU 모드로 전환**
 
-💾 내보내기 (Export)
+### 🎥 미디어 호환성 (MP4 지원)
 
-최종 믹싱 결과물은 고품질 오디오(WAV) 파일로 저장됩니다.
+* **MP4 입력 시 영상 스트림은 제외**
+* **오디오 트랙만 자동 추출**하여 AI 분리 및 레이어 작업에 사용
 
-🚀 배포 최적화 (Bootstrap)
+### 💾 내보내기 (Export)
 
-PyInstaller 빌드 시 models_cache_seed를 포함하여 패키징합니다.
+* 최종 믹싱 결과물을 **고품질 오디오(WAV)** 파일로 저장
 
-사용자 PC에서 최초 실행 시, 모델 파일을 %APPDATA%\AI_Mixing_Studio\models_cache로 자동 복사하여 초기화합니다.
+### 🚀 배포 최적화 (Bootstrap)
 
-📝 로깅 시스템
+* PyInstaller 빌드 시 **`models_cache_seed` 포함 패키징**
+* 사용자 PC 최초 실행 시 모델을 자동 초기화:
 
-애플리케이션 로그는 다음 경로에 로테이션 방식으로 저장됩니다.
+  * `models_cache_seed` → `%APPDATA%\AI_Mixing_Studio\models_cache` 로 **자동 복사**
 
-경로: %APPDATA%\AI_Mixing_Studio\logs\app.log
+### 📝 로깅 시스템
 
-🛠️ 개발 환경 설정 및 실행 (Development)
-개발 환경을 세팅하고 애플리케이션을 실행하는 방법입니다.
+* 애플리케이션 로그를 **로테이션 방식으로 저장**
+* 로그 경로:
 
-1. 가상 환경 구성
-PowerShell
+  * `%APPDATA%\AI_Mixing_Studio\logs\app.log`
 
+---
+
+## 🛠️ 개발 환경 설정 및 실행 (Development)
+
+### 1) 가상 환경 구성
+
+```powershell
 python -m venv .venv
-.\.venv\Scripts\activate
-2. 의존성 패키지 설치
-PC 환경에 맞는 스크립트를 실행해 주세요.
+.venv\Scripts\activate
+```
 
-CPU 전용 PC:
+### 2) 의존성 패키지 설치
 
-PowerShell
+PC 환경에 맞는 스크립트를 실행하세요.
 
+**CPU 전용 PC**
+
+```powershell
 .\install_cpu.bat
-NVIDIA GPU (CUDA) PC:
+```
 
-PowerShell
+**NVIDIA GPU (CUDA) PC**
 
+```powershell
 .\install_cuda.bat
-3. 모델 다운로드 및 실행
-필요한 AI 모델을 다운로드한 후 프로그램을 시작합니다.
+```
 
-PowerShell
+### 3) 모델 다운로드 및 실행
 
+```powershell
 python -m src.download_models
 python run.py
-⚙️ 외부 의존성 (FFmpeg)
-MP4 파일 등의 오디오 처리를 위해 FFmpeg가 필요합니다. 다음 두 가지 방법 중 하나를 선택하세요.
+```
 
-자동 인식 (권장): 프로젝트 내 bin/ffmpeg.exe 위치에 실행 파일을 배치합니다.
+---
 
-환경 변수: 시스템 환경 변수 FFMPEG_PATH에 FFmpeg 실행 파일 경로를 지정합니다.
+## ⚙️ 외부 의존성 (FFmpeg)
 
-📦 빌드 및 배포 (Build)
-PyInstaller를 사용하여 단일 디렉토리(onedir) 방식의 실행 파일을 생성합니다.
+MP4 오디오 처리 등을 위해 **FFmpeg**가 필요합니다. 아래 중 하나를 선택하세요.
 
-PowerShell
+### ✅ 방법 1) 자동 인식 (권장)
 
+* 프로젝트 내부에 FFmpeg 실행 파일 배치:
+
+  * `bin/ffmpeg.exe`
+
+### ✅ 방법 2) 환경 변수 설정
+
+* 시스템 환경 변수 `FFMPEG_PATH`에 FFmpeg 실행 파일 경로 지정
+
+---
+
+## 📦 빌드 및 배포 (Build)
+
+PyInstaller를 사용하여 **onedir 방식** 실행 파일을 생성합니다.
+
+```powershell
 .\build_onedir_cpu.bat
-빌드 결과물: dist/AI_Mixing_Studio/AI_Mixing_Studio.exe
+```
 
-문제점: torchaudio 2.9+ 버전부터 오디오 로드/저장(Load/Save) 구현이 TorchCodec 기반으로 변경되었습니다. 현재 TorchCodec은 Windows 환경 지원이 불완전하여, 실행 시 Could not load libtorchcodec 오류가 발생할 수 있습니다.
+빌드 결과물:
 
-해결책 (v9 적용): 본 프로젝트는 이 문제를 방지하기 위해 torchaudio.load 함수를 직접 사용하지 않습니다. 대신 numpy 및 soundfile/ffmpeg 기반의 로딩 방식을 사용하여 해당 호환성 문제를 우회합니다.
+* `dist/AI_Mixing_Studio/AI_Mixing_Studio.exe`
+
+---
+
+## ⚠️ 알려진 이슈 (torchaudio 2.9+ / TorchCodec)
+
+### 문제
+
+`torchaudio 2.9+`부터 Load/Save 구현이 **TorchCodec 기반**으로 변경되었습니다.
+현재 TorchCodec의 **Windows 지원이 불완전**하여 실행 시 아래 오류가 발생할 수 있습니다.
+
+* `Could not load libtorchcodec`
+
+### 해결책 (v9 적용)
+
+본 프로젝트는 해당 문제를 방지하기 위해 **`torchaudio.load`를 직접 사용하지 않습니다.**
+대신 아래 방식으로 우회합니다.
+
+* **numpy + soundfile / ffmpeg 기반 로딩 방식 사용**
+
+---
+
+## 📁 (참고) 주요 경로 정리
+
+* 모델 캐시:
+
+  * `%APPDATA%\AI_Mixing_Studio\models_cache`
+* 로그:
+
+  * `%APPDATA%\AI_Mixing_Studio\logs\app.log`
+* FFmpeg (권장 위치):
+
+  * `bin/ffmpeg.exe`
