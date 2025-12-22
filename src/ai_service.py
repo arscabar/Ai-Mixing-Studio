@@ -1,4 +1,3 @@
-# src/ai_service.py
 import os
 import sys
 import warnings
@@ -10,11 +9,12 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import torch
 import torchaudio
 from transformers import pipeline
+import whisper
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 warnings.filterwarnings("ignore", message=".*The given NumPy array is not writable.*")
 
-from .models import Track, SourceType
+from .models import Track, SourceType, SubtitleItem
 from .audio_io import ensure_stereo_np
 from .media_util import is_video_file
 from .ffmpeg_util import extract_audio_to_wav, find_ffmpeg
@@ -25,8 +25,7 @@ def _ext(p: str) -> str:
     return os.path.splitext(p)[1].lower()
 
 def _need_ffmpeg_decode(path: str) -> bool:
-    if is_video_file(path):
-        return True
+    if is_video_file(path): return True
     return _ext(path) not in AUDIO_EXTS
 
 def _load_audio_numpy_safe(path: str, sr: int) -> np.ndarray:
@@ -34,8 +33,7 @@ def _load_audio_numpy_safe(path: str, sr: int) -> np.ndarray:
         if not find_ffmpeg():
             import librosa
             y, _ = librosa.load(path, sr=sr, mono=False)
-            if y.ndim == 1:
-                y = np.stack([y, y], axis=0)
+            if y.ndim == 1: y = np.stack([y, y], axis=0)
             return ensure_stereo_np(y.T)
 
         td = tempfile.TemporaryDirectory()
@@ -70,26 +68,20 @@ class AISeparationWorker(QThread):
         super().__init__()
         self.file_path = file_path
         self.user_sr = int(user_sr)
-        if device_pref == "cuda" and torch.cuda.is_available():
-            self.device = "cuda"
-        else:
-            self.device = "cpu"
+        self.device = "cuda" if (device_pref == "cuda" and torch.cuda.is_available()) else "cpu"
 
     def _check_model_cached(self) -> bool:
         try:
             hub_dir = torch.hub.get_dir()
             for root, dirs, files in os.walk(hub_dir):
                 for f in files:
-                    if "hdemucs" in f and ".pt" in f:
-                        return True
+                    if "hdemucs" in f and ".pt" in f: return True
             return False
-        except:
-            return False
+        except: return False
 
     def run(self):
         try:
             tracks = []
-
             if self.isInterruptionRequested(): return
 
             self.progress.emit(5, "오디오 로드 중...")
@@ -100,35 +92,27 @@ class AISeparationWorker(QThread):
             labels_str = "Unknown"
             self.progress.emit(15, "AI: 소리 성분 분석 중 (Tagging)...")
             try:
-                classifier = pipeline(
-                    "audio-classification",
-                    model="mit/ast-finetuned-audioset-10-10-0.4593",
-                    device=0 if self.device == "cuda" else -1,
-                )
+                classifier = pipeline("audio-classification", model="mit/ast-finetuned-audioset-10-10-0.4593", device=0 if self.device == "cuda" else -1)
                 tags = classifier(self.file_path, top_k=3)
                 detected = [t["label"] for t in tags]
                 labels_str = ", ".join(detected)
                 self.progress.emit(25, f"감지됨: {labels_str}")
             except Exception as e:
-                self.progress.emit(25, "Tagging 실패")
+                self.progress.emit(25, "Tagging 실패 (건너뜀)")
                 print(f"Tagging Warning: {e}")
 
             if self.isInterruptionRequested(): return
 
             is_cached = self._check_model_cached()
-            msg = "AI: HDemucs 모델 로드 중..."
-            if not is_cached:
-                msg = "AI: 모델 다운로드 중 (약 3GB)... 잠시만 기다려주세요."
+            msg = "AI: HDemucs 모델 로드 중..." if is_cached else "AI: 모델 다운로드 중 (약 3GB)..."
             self.progress.emit(35, msg)
             
             bundle = torchaudio.pipelines.HDEMUCS_HIGH_MUSDB_PLUS
             model = bundle.get_model().to(self.device)
             model.eval()
 
-            self.progress.emit(45, f"AI: 데이터 전처리... (device={self.device})")
-
+            self.progress.emit(45, f"AI: 전처리... ({self.device})")
             waveform = torch.from_numpy(y_user.T).to(self.device)
-            
             if self.user_sr != bundle.sample_rate:
                 resampler = torchaudio.transforms.Resample(self.user_sr, bundle.sample_rate).to(self.device)
                 waveform = resampler(waveform)
@@ -142,16 +126,13 @@ class AISeparationWorker(QThread):
             chunk_size = int(sr * chunk_seconds)
             total_samples = waveform_n.shape[1]
             total_chunks = math.ceil(total_samples / chunk_size)
-
             separated_chunks = []
 
             with torch.no_grad():
                 for i in range(total_chunks):
                     if self.isInterruptionRequested(): return
-                    
                     start = i * chunk_size
                     end = min(start + chunk_size, total_samples)
-                    
                     progress_pct = 50 + int((i / total_chunks) * 40)
                     self.progress.emit(progress_pct, f"AI: 분리 중 ({i+1}/{total_chunks})...")
 
@@ -160,27 +141,22 @@ class AISeparationWorker(QThread):
                     separated_chunks.append(sources_chunk[0].detach().cpu())
                     
                     del sources_chunk, chunk_in
-                    if self.device == "cuda":
-                        torch.cuda.empty_cache()
+                    if self.device == "cuda": torch.cuda.empty_cache()
 
             self.progress.emit(90, "AI: 트랙 병합 중...")
-            
             sources = torch.cat(separated_chunks, dim=-1)
             sources = sources * std.cpu() + ref.cpu()
             sources = sources.numpy()
 
             self.progress.emit(95, "트랙 생성 중...")
-
             target_len = y_user.shape[0]
             source_names = ["Drums", "Bass", "Other", "Vocals"]
             sum_sep = np.zeros_like(y_user, dtype=np.float32)
 
             for i, name in enumerate(source_names):
                 if self.isInterruptionRequested(): return
-
                 src = ensure_stereo_np(sources[i].T)
-                if len(src) > target_len:
-                    src = src[:target_len]
+                if len(src) > target_len: src = src[:target_len]
                 elif len(src) < target_len:
                     pad = np.zeros((target_len - len(src), 2), dtype=np.float32)
                     src = np.vstack([src, pad])
@@ -193,8 +169,6 @@ class AISeparationWorker(QThread):
                 tracks.append(t)
                 sum_sep += src
 
-            if self.isInterruptionRequested(): return
-
             residual = y_user.astype(np.float32, copy=False) - sum_sep
             tracks.append(Track("Residual (Ambience)", residual, sr=self.user_sr, source_type=SourceType.RESIDUAL))
 
@@ -203,15 +177,12 @@ class AISeparationWorker(QThread):
 
         except Exception as e:
             if not self.isInterruptionRequested():
-                import traceback
-                traceback.print_exc()
+                import traceback; traceback.print_exc()
                 self.failed.emit(str(e))
-
 
 class ExternalFileLoader(QThread):
     finished = pyqtSignal(Track)
     failed = pyqtSignal(str)
-
     def __init__(self, file_path: str, sr: int = 44100):
         super().__init__()
         self.file_path = file_path
@@ -221,10 +192,48 @@ class ExternalFileLoader(QThread):
         try:
             if self.isInterruptionRequested(): return
             y = _load_audio_numpy_safe(self.file_path, sr=self.sr)
-            if self.isInterruptionRequested(): return
             name = os.path.splitext(os.path.basename(self.file_path))[0]
             track = Track(f"{name} (Ext)", y, sr=self.sr, source_type=SourceType.IMPORTED)
             self.finished.emit(track)
         except Exception as e:
-            if not self.isInterruptionRequested():
-                self.failed.emit(str(e))
+            self.failed.emit(str(e))
+
+class SubtitleGenerationWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, audio_path: str, model_size: str = "small", device_pref: str = "cuda"):
+        super().__init__()
+        self.audio_path = audio_path
+        self.model_size = model_size
+        self.device = "cuda" if (device_pref == "cuda" and torch.cuda.is_available()) else "cpu"
+
+    def run(self):
+        try:
+            self.progress.emit(10, f"Whisper 모델 로드 ({self.model_size}, {self.device})...")
+            model = whisper.load_model(self.model_size, device=self.device)
+
+            self.progress.emit(30, "오디오 인식 및 자막 생성 중...")
+            use_fp16 = (self.device == "cuda")
+            result = model.transcribe(self.audio_path, fp16=use_fp16)
+
+            detected_lang = result.get('language', 'unknown')
+            self.progress.emit(80, f"언어 감지: {detected_lang}, 데이터 변환 중...")
+
+            subtitles = []
+            for segment in result['segments']:
+                item = SubtitleItem(
+                    start_time=segment['start'],
+                    end_time=segment['end'],
+                    text=segment['text'].strip(),
+                    language=detected_lang
+                )
+                subtitles.append(item)
+
+            self.progress.emit(100, "자막 생성 완료!")
+            self.finished.emit(subtitles)
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self.failed.emit(str(e))

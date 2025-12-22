@@ -1,18 +1,17 @@
-# src/ui/visualizer_screen.py
 import math
 import numpy as np
 from PyQt6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QTabWidget, QFormLayout, 
                              QSlider, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, 
                              QCheckBox, QLabel, QGroupBox, QFontComboBox, 
                              QColorDialog, QDialogButtonBox, QLineEdit)
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPoint, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPoint, QPointF, QRect
 from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, 
                          QPixmap, QImage, QPolygonF, QLinearGradient)
 from PyQt6.QtMultimedia import QVideoSink, QVideoFrame
 
 # --- Settings Dialog ---
 class VisualizerSettingsDialog(QDialog):
-    textAdded = pyqtSignal(str, float) # 텍스트 생성 시그널
+    textAdded = pyqtSignal(str, float)
 
     def __init__(self, parent=None, current_settings=None):
         super().__init__(parent)
@@ -187,8 +186,9 @@ class VisualizerScreen(QWidget):
     settingsChanged = pyqtSignal(dict) 
     settingsRequested = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, ctx=None, parent=None):
         super().__init__(parent)
+        self.ctx = ctx # Need context to access subtitles
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
         self.setMinimumHeight(300)
@@ -221,7 +221,6 @@ class VisualizerScreen(QWidget):
         self._drag_start_pos = QPoint()
         self._drag_start_elem_pos = QPoint()
         
-        # Settings Button (Top-Right)
         self.btn_settings = QPushButton("⚙ Settings", self)
         self.btn_settings.setGeometry(self.width()-90, 10, 80, 30)
         self.btn_settings.setStyleSheet("background: rgba(0,0,0,150); color: white; border: 1px solid white; border-radius: 4px;")
@@ -229,14 +228,12 @@ class VisualizerScreen(QWidget):
         self.btn_settings.clicked.connect(self.settingsRequested.emit)
 
     def resizeEvent(self, e):
-        # 버튼 위치 갱신
         self.btn_settings.move(self.width()-90, 10)
         super().resizeEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             pos = e.position().toPoint()
-            # 텍스트 드래그 (상대 좌표로)
             if self._hit_test(pos):
                 self._dragging_target = 'sub'; self._drag_start_pos = pos
                 self._drag_start_elem_pos = QPoint(self.sub_cfg['x'], self.sub_cfg['y'])
@@ -253,8 +250,6 @@ class VisualizerScreen(QWidget):
         self._dragging_target = None; self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _hit_test(self, pos):
-        # 텍스트 존재하면 전체 화면에서 드래그 가능하게 (편의상)
-        # 정확히 하려면 QFontMetrics로 Rect 계산 필요
         return bool(self.sub_cfg.get('text'))
 
     def _on_video_frame(self, frame: QVideoFrame):
@@ -319,32 +314,16 @@ class VisualizerScreen(QWidget):
         return self.decay
 
     def _get_draw_rect(self, w, h):
-        """[핵심] 영상/이미지 비율에 맞춰 실제 그려질 영역 계산"""
-        target_w, target_h = w, h
-        
-        img = None
-        if self.use_bg_image and self.bg_pixmap:
-            img = self.bg_pixmap
-        elif self.current_video_frame:
-            img = self.current_video_frame
-            
+        img = self.bg_pixmap if (self.use_bg_image and self.bg_pixmap) else self.current_video_frame
         if img:
             img_ratio = img.width() / img.height()
             widget_ratio = w / h
-            
             if img_ratio > widget_ratio:
-                # Video is wider -> Letterbox (Top/Bottom bars)
-                # Fit width
                 new_h = w / img_ratio
-                y_off = (h - new_h) / 2
-                return QRectF(0, y_off, w, new_h)
+                return QRectF(0, (h - new_h) / 2, w, new_h)
             else:
-                # Video is taller -> Pillarbox (Left/Right bars)
-                # Fit height
                 new_w = h * img_ratio
-                x_off = (w - new_w) / 2
-                return QRectF(x_off, 0, new_w, h)
-                
+                return QRectF((w - new_w) / 2, 0, new_w, h)
         return QRectF(0, 0, w, h)
 
     def paintEvent(self, e):
@@ -355,11 +334,9 @@ class VisualizerScreen(QWidget):
 
         p.fillRect(0, 0, w, h, QColor(20, 20, 20))
 
-        # 1. Draw Content (Video/Image)
         draw_rect = self._get_draw_rect(w, h)
         
         if not self.use_bg_image and self.current_video_frame is None:
-            # Grid
             p.setPen(QPen(QColor(50, 50, 50), 1, Qt.PenStyle.DotLine))
             for x in range(0, w, 50): p.drawLine(x, 0, x, h)
             for y in range(0, h, 50): p.drawLine(0, y, w, y)
@@ -373,11 +350,7 @@ class VisualizerScreen(QWidget):
             p.drawImage(draw_rect.toRect(), self.current_video_frame)
             p.setOpacity(1.0)
 
-        # 2. Draw Overlays (Spectrum & Text) inside draw_rect
         need_masking = self.mask_mode or self.text_mask_mode
-        
-        # Buffer creation (Full size, but we clip drawing)
-        # 최적화: 버퍼도 w, h 전체로 하되, 내용은 draw_rect에 맞춤
         
         if need_masking:
             buffer = QPixmap(w, h)
@@ -386,7 +359,6 @@ class VisualizerScreen(QWidget):
             pb.setRenderHint(QPainter.RenderHint.Antialiasing)
             
             if self.mask_mode: 
-                # 마스킹 모드일 땐 영상 영역 위에만 오버레이를 덮음
                 pb.fillRect(draw_rect, self.color_overlay)
             
             if self.show_spectrum:
@@ -411,6 +383,11 @@ class VisualizerScreen(QWidget):
                 self._draw_spectrum_impl(p, draw_rect, decay_data, False)
             self._draw_text(p, self.sub_cfg, False, draw_rect)
 
+        # [NEW] Subtitles Draw Call
+        if self.ctx:
+            ct = self.ctx.current_frame / self.ctx.sample_rate
+            self._draw_subtitles(p, w, h, ct)
+
         p.end()
 
     def _draw_spectrum_impl(self, p, rect, data, is_mask):
@@ -418,7 +395,6 @@ class VisualizerScreen(QWidget):
             p.setBrush(QBrush(QColor(255, 255, 255)))
             p.setPen(Qt.PenStyle.NoPen)
         else:
-            # Gradient based on Rect height
             grad = QLinearGradient(rect.left(), rect.bottom(), rect.left(), rect.top())
             grad.setColorAt(0, self.color_bot); grad.setColorAt(1, self.color_top)
             p.setBrush(QBrush(grad))
@@ -441,7 +417,6 @@ class VisualizerScreen(QWidget):
             for i in range(cnt):
                 val = data[i] * self.height_scale * 2.0
                 angle = i * angle_step - (math.pi / 2)
-                
                 ox = cx + (radius + val) * math.cos(angle)
                 oy = cy + (radius + val) * math.sin(angle)
                 ix = cx + radius * math.cos(angle)
@@ -451,7 +426,6 @@ class VisualizerScreen(QWidget):
         elif self.shape == 'line':
             path = QPainterPath()
             step_w = w / max(1, cnt-1)
-            # Start
             path.moveTo(x0, y0 + h - (data[0] * self.height_scale))
             for i in range(1, cnt):
                 x = x0 + i * step_w
@@ -464,16 +438,12 @@ class VisualizerScreen(QWidget):
             p.setPen(pen)
             p.drawPath(path)
             
-        else: # Linear
+        else:
             rect_w = w * 0.8
-            # Bar width
             bw = rect_w / cnt
-            # Start X (Centered)
             start_x = x0 + (w - rect_w) / 2
-            
             for i in range(cnt):
                 bh = min(h, data[i] * self.height_scale)
-                # Bottom aligned
                 bar_rect = QRectF(start_x + i*bw, y0 + h - bh, bw-1, bh)
                 p.drawRect(bar_rect)
 
@@ -488,9 +458,20 @@ class VisualizerScreen(QWidget):
         else: 
             c = QColor('white'); c.setAlphaF(self.text_opacity)
             p.setPen(c)
-            
-        # Draw relative to draw_rect + manual offset
-        # Note: cfg['x'], ['y'] are visualizer-relative coords (absolute px in widget)
-        # If we want them relative to video, we need to adjust.
-        # But for drag interaction consistency, we keep them as absolute widget coords.
         p.drawText(cfg.get('x', 50), cfg.get('y', 100), t)
+
+    def _draw_subtitles(self, p, w, h, ct):
+        if not self.ctx.subtitles: return
+        cur = None
+        for s in self.ctx.subtitles:
+            if s.start_time <= ct <= s.end_time:
+                cur = s; break
+        
+        if cur:
+            f = QFont("Malgun Gothic", 36, QFont.Weight.Bold)
+            p.setFont(f)
+            r = QRect(0, h-120, w, 100)
+            p.setPen(QColor(0,0,0,180))
+            p.drawText(r.adjusted(2,2,2,2), Qt.AlignmentFlag.AlignCenter, cur.text)
+            p.setPen(QColor(255,255,0))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, cur.text)

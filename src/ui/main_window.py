@@ -1,12 +1,15 @@
 # src/ui/main_window.py
 import sys
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QPushButton, QDockWidget, QLabel, QFileDialog, QScrollArea, QProgressBar)
+import os
+import tempfile
+import uuid
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QPushButton, QDockWidget, QLabel, QFileDialog, QScrollArea, QProgressBar, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from ..models import ProjectContext, TextEvent
 from ..audio_engine import AudioEngine
-from ..ai_service import AISeparationWorker
+from ..ai_service import AISeparationWorker, SubtitleGenerationWorker
 from ..media_util import is_video_file
 
 from .visualizer_screen import VisualizerScreen
@@ -28,9 +31,12 @@ class StudioMainWindow(QMainWindow):
 
         self.ctx = ProjectContext()
         self.engine = AudioEngine(self.ctx)
+        self.selected_track_id = None
         
         self.track_widgets = []
-        self._init_ui()
+        
+        # Pass Context to Visualizer
+        self.visualizer = VisualizerScreen(self.ctx)
         
         self.video_player = QMediaPlayer(self)
         self.video_audio = QAudioOutput(self)
@@ -38,6 +44,7 @@ class StudioMainWindow(QMainWindow):
         self.video_player.setAudioOutput(self.video_audio)
         self.video_player.setVideoOutput(self.visualizer.video_sink)
         
+        self._init_ui()
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_playback_ui)
         self.timer.start(33)
@@ -50,6 +57,9 @@ class StudioMainWindow(QMainWindow):
         self.b_play = QPushButton("▶ Play"); self.b_play.clicked.connect(self.toggle_play); tb.addWidget(self.b_play)
         b_bg = QPushButton("🖼 BG"); b_bg.clicked.connect(self.set_bg); tb.addWidget(b_bg)
         
+        # [NEW] Subtitle Button
+        b_sub = QPushButton("🎤 Subtitles"); b_sub.clicked.connect(self.generate_subtitles); tb.addWidget(b_sub)
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setFixedWidth(200)
@@ -58,7 +68,6 @@ class StudioMainWindow(QMainWindow):
         
         self.lbl_status = QLabel(" Ready"); tb.addWidget(self.lbl_status)
         
-        self.visualizer = VisualizerScreen()
         self.visualizer.settingsRequested.connect(self.open_vis_settings)
         self.setCentralWidget(self.visualizer)
         
@@ -66,7 +75,6 @@ class StudioMainWindow(QMainWindow):
         self.tl_panel = TimelinePanel()
         self.tl_panel.view.seek_requested.connect(self.seek)
         self.tl_panel.view.refresh_needed.connect(self.refresh_timeline)
-        # [NEW] 설정창 요청 시그널 연결
         self.tl_panel.view.request_settings_signal.connect(self.open_vis_settings)
         
         self.dock_tl.setWidget(self.tl_panel)
@@ -91,9 +99,7 @@ class StudioMainWindow(QMainWindow):
         from .visualizer_screen import VisualizerSettingsDialog
         dlg = VisualizerSettingsDialog(self, self.visualizer.get_settings())
         dlg.textAdded.connect(self._on_text_added)
-        
-        if dlg.exec(): 
-            self.visualizer.set_settings(dlg.get_settings())
+        if dlg.exec(): self.visualizer.set_settings(dlg.get_settings())
 
     def _on_text_added(self, text, duration):
         t = self.ctx.current_frame / self.ctx.sample_rate
@@ -120,16 +126,13 @@ class StudioMainWindow(QMainWindow):
         data = self.engine.vis_buffer if self.ctx.is_playing else None
         self.visualizer.set_audio_data(data)
         
-        # Apply Global Automation
         spec_scale = self.ctx.get_global_value('spectrum_scale', cur_sec, 0.1) 
         self.visualizer.scale = spec_scale
         
-        # Apply Text
         active_text = ""
         for evt in self.ctx.text_events:
             if evt.is_persistent or (evt.start_time <= cur_sec <= evt.end_time):
-                active_text = evt.text
-                break 
+                active_text = evt.text; break 
         self.visualizer.sub_cfg['text'] = active_text
         self.visualizer.update()
 
@@ -163,8 +166,7 @@ class StudioMainWindow(QMainWindow):
         
         self.worker = AISeparationWorker(path, user_sr=44100, device_pref="cuda")
         self.worker.finished.connect(self.on_ready)
-        if hasattr(self.worker, 'progress'):
-            self.worker.progress.connect(self.update_progress)
+        if hasattr(self.worker, 'progress'): self.worker.progress.connect(self.update_progress)
         self.worker.start()
 
     def update_progress(self, val, msg):
@@ -183,6 +185,7 @@ class StudioMainWindow(QMainWindow):
         self.refresh_timeline()
 
     def sel_track(self, tid):
+        self.selected_track_id = tid
         t = next((x for x in self.ctx.tracks if x.id == tid), None)
         self.ins.set_track(t)
         for w in self.track_widgets: w.set_selected(w.track.id == tid)
@@ -193,6 +196,40 @@ class StudioMainWindow(QMainWindow):
     def set_bg(self):
         p, _ = QFileDialog.getOpenFileName(self, "BG", "", "Img (*.png *.jpg)")
         if p: self.visualizer.set_background_image(p)
+
+    def generate_subtitles(self):
+        # 1. Select Vocal
+        target = None
+        if self.selected_track_id:
+            target = next((t for t in self.ctx.tracks if t.id == self.selected_track_id), None)
+        if not target:
+            target = next((t for t in self.ctx.tracks if "Vocals" in t.name or "vocals" in t.name), None)
+            
+        if not target:
+            QMessageBox.critical(self, "Error", "Please select a Vocal track.")
+            return
+
+        # 2. Temp File
+        tmp = os.path.join(tempfile.gettempdir(), f"temp_{uuid.uuid4()}.wav")
+        try:
+            import soundfile as sf
+            sf.write(tmp, target.data, target.sr)
+        except Exception as e:
+            print(e); return
+
+        # 3. Worker
+        self.sub_worker = SubtitleGenerationWorker(tmp, model_size="small")
+        self.sub_worker.progress.connect(self.update_progress)
+        self.sub_worker.finished.connect(self.on_sub_ready)
+        self.progress_bar.setVisible(True)
+        self.lbl_status.setText("Whisper Running...")
+        self.sub_worker.start()
+
+    def on_sub_ready(self, subs):
+        self.ctx.subtitles = subs
+        self.progress_bar.setVisible(False)
+        self.lbl_status.setText(f"Subtitles: {len(subs)}")
+        QMessageBox.information(self, "Success", "Subtitles Generated!")
 
     def closeEvent(self, e):
         self.engine.stop(); super().closeEvent(e)
