@@ -126,8 +126,15 @@ class StudioMainWindow(QMainWindow):
         data = self.engine.vis_buffer if self.ctx.is_playing else None
         self.visualizer.set_audio_data(data)
         
-        spec_scale = self.ctx.get_global_value('spectrum_scale', cur_sec, 0.1) 
-        self.visualizer.scale = spec_scale
+        # [NEW] Apply Global Automations (Visible, Scale, Shape)
+        vis_val = self.ctx.get_global_value('spec_visible', cur_sec, 1.0)
+        self.visualizer.spec_visible = (vis_val >= 0.5)
+        
+        scale_val = self.ctx.get_global_value('spec_scale', cur_sec, 1.0) 
+        self.visualizer.spec_scale_factor = scale_val
+        
+        shape_val = self.ctx.get_global_value('spec_shape', cur_sec, -1)
+        self.visualizer.spec_shape_override = shape_val
         
         active_text = ""
         for evt in self.ctx.text_events:
@@ -230,6 +237,13 @@ class StudioMainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.lbl_status.setText(f"Subtitles: {len(subs)}")
         QMessageBox.information(self, "Success", "Subtitles Generated!")
+
+    def export_media(self):
+        if not self.ctx.tracks: return
+        path, _ = QFileDialog.getSaveFileName(self, "Export", "mix.wav", "Audio Only (*.wav)")
+        if not path: return
+        if self.engine.export_mix_to_wav(path): QMessageBox.information(self, "Success", f"Exported: {path}")
+        else: QMessageBox.critical(self, "Error", "Export Failed")
 
     def closeEvent(self, e):
         self.engine.stop(); super().closeEvent(e)

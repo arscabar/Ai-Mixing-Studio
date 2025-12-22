@@ -217,6 +217,10 @@ class VisualizerScreen(QWidget):
         self.text_mask_mode = False
         self.sub_cfg = {'text':'', 'size':30, 'font':'Arial', 'bold':False, 'italic':False, 'x':50, 'y':100}
         
+        self.spec_visible = True
+        self.spec_scale_factor = 1.0
+        self.spec_shape_override = -1 # -1: use settings, 0:linear, 1:circ, 2:line
+
         self._dragging_target = None
         self._drag_start_pos = QPoint()
         self._drag_start_elem_pos = QPoint()
@@ -309,7 +313,9 @@ class VisualizerScreen(QWidget):
             step = len(mag) // self.bar_count
             binned = np.array([np.mean(mag[i*step:(i+1)*step]) for i in range(self.bar_count)])
         else: binned = np.zeros(self.bar_count)
-        binned = np.log10(binned + 1.0) * 300.0 * self.scale
+        
+        final_scale = self.scale * self.spec_scale_factor
+        binned = np.log10(binned + 1.0) * 300.0 * final_scale
         self.decay = np.maximum(self.decay * 0.80, binned)
         return self.decay
 
@@ -350,40 +356,42 @@ class VisualizerScreen(QWidget):
             p.drawImage(draw_rect.toRect(), self.current_video_frame)
             p.setOpacity(1.0)
 
-        need_masking = self.mask_mode or self.text_mask_mode
-        
-        if need_masking:
-            buffer = QPixmap(w, h)
-            buffer.fill(Qt.GlobalColor.transparent)
-            pb = QPainter(buffer)
-            pb.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Draw Spectrum if Visible
+        if self.spec_visible:
+            need_masking = self.mask_mode or self.text_mask_mode
             
-            if self.mask_mode: 
-                pb.fillRect(draw_rect, self.color_overlay)
-            
-            if self.show_spectrum:
-                decay_data = self._process_fft()
-                op = QPainter.CompositionMode.CompositionMode_DestinationOut if self.mask_mode else QPainter.CompositionMode.CompositionMode_SourceOver
-                pb.setCompositionMode(op)
-                self._draw_spectrum_impl(pb, draw_rect, decay_data, self.mask_mode)
-                pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            if need_masking:
+                buffer = QPixmap(w, h)
+                buffer.fill(Qt.GlobalColor.transparent)
+                pb = QPainter(buffer)
+                pb.setRenderHint(QPainter.RenderHint.Antialiasing)
+                
+                if self.mask_mode: 
+                    pb.fillRect(draw_rect, self.color_overlay)
+                
+                if self.show_spectrum:
+                    decay_data = self._process_fft()
+                    op = QPainter.CompositionMode.CompositionMode_DestinationOut if self.mask_mode else QPainter.CompositionMode.CompositionMode_SourceOver
+                    pb.setCompositionMode(op)
+                    self._draw_spectrum_impl(pb, draw_rect, decay_data, self.mask_mode)
+                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-            if self.text_mask_mode:
-                pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-                self._draw_text(pb, self.sub_cfg, True, draw_rect)
-                pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                if self.text_mask_mode:
+                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
+                    self._draw_text(pb, self.sub_cfg, True, draw_rect)
+                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                else:
+                    self._draw_text(pb, self.sub_cfg, False, draw_rect)
+                
+                pb.end()
+                p.drawPixmap(0, 0, buffer)
             else:
-                self._draw_text(pb, self.sub_cfg, False, draw_rect)
-            
-            pb.end()
-            p.drawPixmap(0, 0, buffer)
-        else:
-            if self.show_spectrum:
-                decay_data = self._process_fft()
-                self._draw_spectrum_impl(p, draw_rect, decay_data, False)
-            self._draw_text(p, self.sub_cfg, False, draw_rect)
+                if self.show_spectrum:
+                    decay_data = self._process_fft()
+                    self._draw_spectrum_impl(p, draw_rect, decay_data, False)
+                self._draw_text(p, self.sub_cfg, False, draw_rect)
 
-        # [NEW] Subtitles Draw Call
+        # Draw Subtitles (Always Top)
         if self.ctx:
             ct = self.ctx.current_frame / self.ctx.sample_rate
             self._draw_subtitles(p, w, h, ct)
@@ -397,14 +405,17 @@ class VisualizerScreen(QWidget):
         else:
             grad = QLinearGradient(rect.left(), rect.bottom(), rect.left(), rect.top())
             grad.setColorAt(0, self.color_bot); grad.setColorAt(1, self.color_top)
-            p.setBrush(QBrush(grad))
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(grad)); p.setPen(Qt.PenStyle.NoPen)
 
         cnt = len(data)
         w, h = rect.width(), rect.height()
         x0, y0 = rect.x(), rect.y()
         
-        if self.shape == 'circular':
+        shape_type = self.shape
+        if self.spec_shape_override >= 0:
+            shape_type = ['linear', 'circular', 'line'][int(self.spec_shape_override) % 3]
+
+        if shape_type == 'circular':
             cx, cy = x0 + w/2, y0 + h/2
             radius = min(w, h) * self.radius
             angle_step = 2 * math.pi / cnt
@@ -423,7 +434,7 @@ class VisualizerScreen(QWidget):
                 iy = cy + radius * math.sin(angle)
                 p.drawLine(QPointF(ix, iy), QPointF(ox, oy))
                 
-        elif self.shape == 'line':
+        elif shape_type == 'line':
             path = QPainterPath()
             step_w = w / max(1, cnt-1)
             path.moveTo(x0, y0 + h - (data[0] * self.height_scale))
@@ -462,16 +473,23 @@ class VisualizerScreen(QWidget):
 
     def _draw_subtitles(self, p, w, h, ct):
         if not self.ctx.subtitles: return
-        cur = None
-        for s in self.ctx.subtitles:
-            if s.start_time <= ct <= s.end_time:
-                cur = s; break
-        
+        # Find current active subtitle
+        cur = next((s for s in self.ctx.subtitles if s.start_time <= ct <= s.end_time), None)
         if cur:
-            f = QFont("Malgun Gothic", 36, QFont.Weight.Bold)
+            f = QFont("Malgun Gothic", cur.font_size, QFont.Weight.Bold)
             p.setFont(f)
-            r = QRect(0, h-120, w, 100)
-            p.setPen(QColor(0,0,0,180))
+            
+            fm = QFontMetrics(f)
+            tw = fm.horizontalAdvance(cur.text)
+            th = fm.height()
+            
+            # Bottom Center Layout
+            r = QRectF((w - tw)/2, h - 150, tw, th)
+            
+            # Shadow
+            p.setPen(QColor(0,0,0, 200))
             p.drawText(r.adjusted(2,2,2,2), Qt.AlignmentFlag.AlignCenter, cur.text)
-            p.setPen(QColor(255,255,0))
+            
+            # Text Body
+            p.setPen(QColor(cur.color_hex))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, cur.text)
