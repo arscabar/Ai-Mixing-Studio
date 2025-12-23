@@ -129,3 +129,7 @@ PyInstaller를 사용하여 **onedir 방식** 실행 파일을 생성합니다.
 * FFmpeg (권장 위치):
 
   * `bin/ffmpeg.exe`
+
+## TODOLIST
+  * prompt를 사용하여 세부 레이어 조정 작업 추가 (sam audio - prompt 레이어 추출 기능 사용)
+  * 자동 자막 세부속성 추가
