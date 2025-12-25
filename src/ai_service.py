@@ -275,6 +275,7 @@ class MutableBatch(dict):
     def __setattr__(self, name, value):
         self[name] = value
 
+
 class PromptSeparationWorker(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(list)
@@ -288,6 +289,9 @@ class PromptSeparationWorker(QThread):
         self.device = "cuda" if (device_pref == "cuda" and torch.cuda.is_available()) else "cpu"
 
     def run(self):
+        print(f"[LOG] PromptSeparationWorker 시작. Device: {self.device}")
+        
+        # 1. 메모리 초기화
         if self.device == "cuda":
             gc.collect()
             torch.cuda.empty_cache()
@@ -298,20 +302,26 @@ class PromptSeparationWorker(QThread):
             
             try:
                 from sam_audio import SAMAudio, SAMAudioProcessor
+                # BatchFeature 등 복잡한 객체 사용 안 함
+                print("[LOG] 라이브러리 임포트 성공")
             except ImportError:
                  raise ImportError("Meta SAM Audio 라이브러리가 필요합니다.")
 
             model_id = "facebook/sam-audio-small"
             
-            # 1. 프로세서/모델 로드
+            # 2. 프로세서/모델 로드
+            print(f"[LOG] 모델 로드 중 (ID: {model_id})...")
             processor = SAMAudioProcessor.from_pretrained(model_id)
             model = SAMAudio.from_pretrained(model_id)
+            print("[LOG] 모델 로드 완료.")
             
             # GPU/FP16 설정
             if self.device == "cuda":
+                print("[LOG] CUDA(FP16) 설정 적용 중...")
                 model = model.half().to(self.device)
                 target_dtype = torch.float16
             else:
+                print("[LOG] CPU(FP32) 설정 적용 중...")
                 model = model.to(self.device)
                 target_dtype = torch.float32
 
@@ -319,7 +329,7 @@ class PromptSeparationWorker(QThread):
 
             if self.isInterruptionRequested(): return
 
-            # 청크 설정 (10초)
+            # 3. 청크 설정
             chunk_seconds = 10 
             chunk_samples = int(chunk_seconds * self.sr)
             total_frames = len(self.input_data)
@@ -330,95 +340,144 @@ class PromptSeparationWorker(QThread):
             
             model_sr = processor.audio_sampling_rate 
 
-            self.progress.emit(10, f"작업 시작: 총 {total_chunks}개 구간.")
+            print(f"[LOG] 총 {total_chunks}개 구간 처리 시작. (Input: {self.sr}Hz -> Model: {model_sr}Hz 리샘플링 예정)")
+            self.progress.emit(10, f"작업 시작: 총 {total_chunks}개 구간 처리.")
+
+            # [FIX] 모델 입력을 위한 단순 클래스 정의 (호환성 문제 해결)
+            class SimpleBatch:
+                def __init__(self, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
 
             for i in range(total_chunks):
-                if self.isInterruptionRequested(): return
+                if self.isInterruptionRequested(): 
+                    print("[LOG] 중단 요청됨.")
+                    return
                 
                 progress_pct = 10 + int((i / total_chunks) * 85)
                 self.progress.emit(progress_pct, f"구간 처리 중 ({i+1}/{total_chunks})...")
 
+                # 4. 오디오 자르기
                 start = i * chunk_samples
                 end = min(start + chunk_samples, total_frames)
                 chunk_audio = self.input_data[start:end]
-                
-                # 임시 저장
+                expected_len = end - start 
+
+                # 임시 파일 저장
                 chunk_path = os.path.join(temp_dir, f"chunk_{i}.wav")
                 sf.write(chunk_path, chunk_audio, self.sr)
 
-                # 2. 프로세서로부터 원본 데이터 받기
+                # 5. Processor 실행 (데이터 읽기 전용)
                 raw_inputs = processor(audios=[chunk_path], descriptions=[self.prompt])
 
                 # =========================================================
-                # [해결책] MutableBatch + Tensor original_sizes 주입
+                # [FINAL FIX] 단순 객체(SimpleBatch)에 데이터 직접 이식
                 # =========================================================
-                clean_inputs = MutableBatch()
-
-                # 2-1. 원본 오디오 텐서 추출 (BatchFeature 처리)
-                # raw_inputs가 BatchFeature 객체일 경우 .data 속성을, 
-                # 딕셔너리일 경우 그 자체를 사용하여 값 추출
-                if hasattr(raw_inputs, 'data'):
-                    data_source = raw_inputs.data
+                
+                # 5-1. Processor 결과에서 데이터 추출 (딕셔너리화)
+                data_map = {}
+                # Processor가 반환하는 객체의 속성을 안전하게 추출
+                if hasattr(raw_inputs, 'data') and isinstance(raw_inputs.data, dict):
+                    data_map.update(raw_inputs.data)
+                elif isinstance(raw_inputs, dict):
+                    data_map.update(raw_inputs)
                 else:
-                    data_source = raw_inputs
+                    # 알 수 없는 객체일 경우 강제 추출
+                    try: data_map.update(vars(raw_inputs))
+                    except: pass
+                    # 필수 키 수동 확인
+                    for key in ['input_values', 'pixel_values', 'audios', 'input_features', 'input_ids', 'attention_mask']:
+                        if hasattr(raw_inputs, key):
+                            data_map[key] = getattr(raw_inputs, key)
 
-                # audios 가져오기
-                if 'audios' in data_source:
-                    audio_tensor = data_source['audios'][0]
-                elif hasattr(raw_inputs, 'audios'):
-                    audio_tensor = raw_inputs.audios[0]
-                else:
-                    # 키가 없으면 values() 첫번째로 시도 (fallback)
-                    audio_tensor = list(data_source.values())[0][0]
-
-                real_len_16k = audio_tensor.shape[-1]
+                # 5-2. SimpleBatch 객체 생성 및 텐서 변환
+                clean_inputs = SimpleBatch()
                 
-                # (1) Audio Tensor: GPU/FP16 이동 + 배치 차원(1) 추가
-                gpu_tensor = audio_tensor.to(self.device, dtype=target_dtype)
-                if gpu_tensor.ndim == 2:
-                    gpu_tensor = gpu_tensor.unsqueeze(0) # (1, C, T)
+                audio_tensor = None
+                tensor_key_name = None
                 
-                clean_inputs.audios = gpu_tensor
-                
-                # (2) [핵심] Original Sizes를 'LongTensor'로 주입
-                # 리스트([]) 대신 텐서로 넣어야 narrow 연산 시 에러 안 남
-                clean_inputs.original_sizes = torch.LongTensor([real_len_16k])
-                
-                # (3) 나머지 속성 복사 (input_ids, attention_mask 등)
-                for k, v in data_source.items():
-                    if k in ['audios', 'original_sizes']: continue 
+                for k, v in data_map.items():
+                    if k == 'original_sizes': continue # 수동 설정을 위해 제외
                     
-                    # 텐서만 변환 (정수형은 FP16 변환 금지, GPU 이동만)
+                    # 리스트 -> 텐서
+                    if isinstance(v, list):
+                        if len(v) > 0 and isinstance(v[0], torch.Tensor):
+                            v = torch.stack(v)
+                        else:
+                            try: v = torch.tensor(v)
+                            except: pass
+                    elif isinstance(v, np.ndarray):
+                        v = torch.from_numpy(v)
+                    
+                    # GPU/FP16 이동
                     if isinstance(v, torch.Tensor):
+                        if k in ['input_values', 'audios', 'input_features']:
+                            audio_tensor = v
+                            tensor_key_name = k
+                            
                         v = v.to(self.device)
                         if v.is_floating_point():
                             v = v.to(dtype=target_dtype)
                     
+                    # 객체 속성으로 주입
                     setattr(clean_inputs, k, v)
 
-                # 3. 추론
+                # 5-3. [핵심] 오디오 텐서 차원 보정 및 Original Sizes 주입
+                # audio_tensor가 발견되지 않았을 경우 대비
+                if audio_tensor is None:
+                    # clean_inputs에서 다시 탐색
+                    for k in ['input_values', 'audios', 'input_features']:
+                        if hasattr(clean_inputs, k):
+                            audio_tensor = getattr(clean_inputs, k)
+                            tensor_key_name = k
+                            break
+                
+                if audio_tensor is not None:
+                    # GPU에 올라간 최신 텐서 가져오기
+                    curr_tensor = getattr(clean_inputs, tensor_key_name)
+                    
+                    # 실제 길이 계산 (Time Dimension)
+                    real_len = curr_tensor.shape[-1]
+                    
+                    # (1) 차원 보정: (Batch, Time) -> (Batch, 1, Time)
+                    if curr_tensor.ndim == 2:
+                        curr_tensor = curr_tensor.unsqueeze(1)
+                        setattr(clean_inputs, tensor_key_name, curr_tensor)
+                    
+                    # (2) [오류 해결] original_sizes를 '파이썬 정수 리스트'로 주입
+                    # 텐서([48000]) 대신 리스트 [48000]을 주면 모델이 확실하게 읽습니다.
+                    setattr(clean_inputs, 'original_sizes', [int(real_len)])
+                    
+                    # (3) 안전장치: attention_mask 생성
+                    if not hasattr(clean_inputs, 'attention_mask'):
+                         mask = torch.ones((1, real_len), device=self.device, dtype=torch.long)
+                         setattr(clean_inputs, 'attention_mask', mask)
+                else:
+                    print(f"[WARN] [{i+1}] 오디오 텐서를 찾지 못했습니다.")
+
+                # 6. 추론
                 with torch.no_grad():
+                    # 이제 clean_inputs는 완벽한 파이썬 객체입니다.
                     outputs = model.separate(clean_inputs)
                 
-                # 4. 결과 추출
-                if len(outputs.target) > 0:
-                    gen_tensor = outputs.target[0].float().detach().cpu() 
+                # 7. 결과 추출
+                if outputs.target is not None and len(outputs.target) > 0:
+                    gen_tensor = outputs.target[0].float().detach().cpu()
                     t_wav = gen_tensor.numpy()
-                    t_wav = np.squeeze(t_wav)
+                    if t_wav.ndim == 2 and t_wav.shape[0] == 1: t_wav = np.squeeze(t_wav)
                 else:
-                    t_wav = np.zeros((real_len_16k,), dtype=np.float32)
+                    t_wav = np.zeros((int(chunk_seconds * model_sr),), dtype=np.float32)
 
                 if outputs.residual is not None and len(outputs.residual) > 0:
                     res_tensor = outputs.residual[0].float().detach().cpu()
                     r_wav = res_tensor.numpy()
-                    r_wav = np.squeeze(r_wav)
+                    if r_wav.ndim == 2 and r_wav.shape[0] == 1: r_wav = np.squeeze(r_wav)
                 else:
                     r_wav = np.zeros_like(t_wav)
 
-                # 5. 리샘플링
+                # 8. 리샘플링
                 if model_sr != self.sr:
                     resampler = torchaudio.transforms.Resample(orig_freq=model_sr, new_freq=self.sr)
-                    
                     t_tensor_in = torch.from_numpy(t_wav)
                     if t_tensor_in.ndim == 1: t_tensor_in = t_tensor_in.unsqueeze(0)
                     r_tensor_in = torch.from_numpy(r_wav)
@@ -427,28 +486,33 @@ class PromptSeparationWorker(QThread):
                     t_wav = resampler(t_tensor_in).squeeze().numpy()
                     r_wav = resampler(r_tensor_in).squeeze().numpy()
 
-                # 6. Stereo & 길이 맞춤
-                t_part = ensure_stereo_np(t_wav.T)
-                r_part = ensure_stereo_np(r_wav.T)
+                # 9. 길이 및 채널 맞춤
+                t_part = ensure_stereo_np(t_wav.T if t_wav.ndim > 1 else t_wav)
+                r_part = ensure_stereo_np(r_wav.T if r_wav.ndim > 1 else r_wav)
                 
-                expected_len = end - start 
-                
-                if len(t_part) > expected_len: t_part = t_part[:expected_len]
-                if len(r_part) > expected_len: r_part = r_part[:expected_len]
-                
-                if len(t_part) < expected_len:
+                if len(t_part) > expected_len:
+                    t_part = t_part[:expected_len]
+                elif len(t_part) < expected_len:
                     pad = np.zeros((expected_len - len(t_part), 2), dtype=np.float32)
                     t_part = np.vstack([t_part, pad])
+
+                if len(r_part) > expected_len:
+                    r_part = r_part[:expected_len]
+                elif len(r_part) < expected_len:
+                    pad = np.zeros((expected_len - len(r_part), 2), dtype=np.float32)
                     r_part = np.vstack([r_part, pad])
 
                 final_target_parts.append(t_part)
                 final_residual_parts.append(r_part)
 
-                del raw_inputs, clean_inputs, outputs, gen_tensor, t_wav, r_wav
+                del raw_inputs, clean_inputs, outputs, data_map
                 try: os.remove(chunk_path) 
                 except: pass
-                if self.device == "cuda": torch.cuda.empty_cache()
+                
+                if self.device == "cuda": 
+                    torch.cuda.empty_cache()
 
+            print("[LOG] 모든 구간 처리 완료. 병합 중...")
             self.progress.emit(95, "결과 병합 중...")
             target_data = np.concatenate(final_target_parts, axis=0)
             residual_data = np.concatenate(final_residual_parts, axis=0)
@@ -467,7 +531,9 @@ class PromptSeparationWorker(QThread):
 
         except Exception as e:
             if not self.isInterruptionRequested():
+                print(f"[ERROR] SAM Audio 오류: {e}")
                 import traceback; traceback.print_exc()
                 self.failed.emit(f"SAM Audio 오류: {str(e)}")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+            print("[LOG] 종료.")
