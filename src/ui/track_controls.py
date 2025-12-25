@@ -1,9 +1,12 @@
-# src/ui/track_controls.py
 import numpy as np
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QSlider, QDial)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, 
+    QSlider, QDial, QMenu, QInputDialog, QMessageBox
+)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen
 
+# [1] 웨이브폼 위젯
 class WaveformWidget(QWidget):
     def __init__(self, vis_min, vis_max, parent=None):
         super().__init__(parent)
@@ -31,16 +34,21 @@ class WaveformWidget(QWidget):
         p.drawLine(xh, 0, xh, h)
         p.end()
 
-class TrackStrip(QFrame):
+# [2] 트랙 컨트롤 (기존 TrackStrip + 우클릭 메뉴 통합)
+class TrackControls(QFrame):
     clicked = pyqtSignal(str)
+    separationRequested = pyqtSignal(str, str) # AI 분리 신호
+
     def __init__(self, track):
         super().__init__()
         self.track = track
         self.setFixedHeight(120)
         self.setStyleSheet("QFrame { background-color: #333; border: 1px solid #555; border-radius: 5px; }")
         
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5,5,5,5)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+        
+        layout = QHBoxLayout(self); layout.setContentsMargins(5,5,5,5)
         
         info_layout = QVBoxLayout()
         self.lbl = QLabel(track.name)
@@ -48,14 +56,14 @@ class TrackStrip(QFrame):
         info_layout.addWidget(self.lbl)
         
         btn_lo = QHBoxLayout()
-        self.btn_mute = QPushButton("M")
-        self.btn_mute.setCheckable(True); self.btn_mute.setFixedSize(30,30)
+        self.btn_mute = QPushButton("M"); self.btn_mute.setCheckable(True); self.btn_mute.setFixedSize(30,30)
         self.btn_mute.setStyleSheet("QPushButton{background:#444; color:white} QPushButton:checked{background:#f44;}")
+        self.btn_mute.setChecked(self.track.mute)
         self.btn_mute.toggled.connect(lambda c: setattr(self.track, 'mute', c))
         
-        self.btn_solo = QPushButton("S")
-        self.btn_solo.setCheckable(True); self.btn_solo.setFixedSize(30,30)
+        self.btn_solo = QPushButton("S"); self.btn_solo.setCheckable(True); self.btn_solo.setFixedSize(30,30)
         self.btn_solo.setStyleSheet("QPushButton{background:#444; color:white} QPushButton:checked{background:#fd4; color:black;}")
+        self.btn_solo.setChecked(self.track.solo)
         self.btn_solo.toggled.connect(lambda c: setattr(self.track, 'solo', c))
         
         btn_lo.addWidget(self.btn_mute); btn_lo.addWidget(self.btn_solo)
@@ -65,12 +73,30 @@ class TrackStrip(QFrame):
         self.wave = WaveformWidget(track.vis_min, track.vis_max)
         layout.addWidget(self.wave, 1)
     
-    def mousePressEvent(self, e): self.clicked.emit(self.track.id)
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton: self.clicked.emit(self.track.id)
+        super().mousePressEvent(e)
+
     def set_selected(self, s):
-        color = "#444" if s else "#333"; border = "#00aaff" if s else "#555"
-        self.setStyleSheet(f"QFrame {{ background-color: {color}; border: 2px solid {border}; border-radius: 5px; }}")
+        self.setStyleSheet(f"QFrame {{ background-color: {'#444' if s else '#333'}; border: 2px solid {'#00aaff' if s else '#555'}; border-radius: 5px; }}")
+
     def set_playhead_ratio(self, r): self.wave.set_playhead_ratio(r)
 
+    def show_context_menu(self, pos):
+        menu = QMenu(self)
+        act_rename = menu.addAction("이름 변경")
+        menu.addSeparator()
+        act_sep = menu.addAction("AI: 텍스트 프롬프트로 소리 추출 (Beta)")
+        
+        action = menu.exec(self.mapToGlobal(pos))
+        if action == act_rename:
+            new_name, ok = QInputDialog.getText(self, "이름 변경", "새 이름:", text=self.track.name)
+            if ok: self.track.name = new_name; self.lbl.setText(new_name)
+        elif action == act_sep:
+            prompt, ok = QInputDialog.getText(self, "AI 소리 추출", "추출할 소리 (영어):\nExample: Guitar, Applause, Dog barking", text="")
+            if ok and prompt: self.separationRequested.emit(self.track.id, prompt)
+
+# [3] 인스펙터 패널 (오류 해결의 핵심)
 class InspectorPanel(QFrame):
     track_modified = pyqtSignal()
     
@@ -95,13 +121,9 @@ class InspectorPanel(QFrame):
         
         self.dial_pan = QDial(); self.dial_pan.setRange(0, 360); self.dial_pan.setWrapping(True); self.dial_pan.setNotchesVisible(True); self.dial_pan.setFixedSize(80, 80)
         self.dial_pan.valueChanged.connect(lambda v: self._set_param('angle_deg', v))
-        layout.addWidget(QLabel("Pan (Angle)"))
-        layout.addWidget(self.dial_pan)
-        self.lbl_pan = QLabel("0°")
-        layout.addWidget(self.lbl_pan)
+        layout.addWidget(QLabel("Pan")); layout.addWidget(self.dial_pan)
+        self.lbl_pan = QLabel("0°"); layout.addWidget(self.lbl_pan)
         
-        layout.addSpacing(20)
-        layout.addWidget(QLabel("💡 [Shift + Drag] in Timeline\nto Create Automation Box"))
         layout.addStretch()
 
     def _set_param(self, p, v):

@@ -9,6 +9,7 @@ class SourceType(Enum):
     AI_SEPARATED = 1
     IMPORTED = 2
     RESIDUAL = 3
+    PROMPT_SEPARATED = 4  # [NEW] 프롬프트 분리 타입 추가
 
 @dataclass
 class Keyframe:
@@ -19,7 +20,7 @@ class Keyframe:
 @dataclass
 class AutomationClip:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    param_type: str = "volume" # volume, pan, spec_visible, spec_scale, spec_shape 등
+    param_type: str = "volume"
     start_time: float = 0.0
     end_time: float = 0.0
     start_value: float = 1.0
@@ -28,7 +29,6 @@ class AutomationClip:
     keyframes: List[Keyframe] = field(default_factory=list)
 
     def add_keyframe(self, time: float, value: float):
-        # 중복 시간 제거 및 정렬
         self.keyframes = [k for k in self.keyframes if abs(k.time - time) > 1e-4]
         self.keyframes.append(Keyframe(time, value))
         self.keyframes.sort(key=lambda k: k.time)
@@ -73,9 +73,8 @@ class SubtitleItem:
     end_time: float = 0.0
     text: str = ""
     language: str = ""
-    # 스타일 속성
     font_size: int = 36
-    color_hex: str = "#FFFF00" # 기본 노란색
+    color_hex: str = "#FFFF00"
 
 class Track:
     def __init__(self, name: str, data: np.ndarray, sr: int = 44100, source_type: SourceType = SourceType.AI_SEPARATED):
