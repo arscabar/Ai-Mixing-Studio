@@ -9,7 +9,7 @@ class SourceType(Enum):
     AI_SEPARATED = 1
     IMPORTED = 2
     RESIDUAL = 3
-    PROMPT_SEPARATED = 4  # [NEW] 프롬프트 분리 타입 추가
+    PROMPT_SEPARATED = 4
 
 @dataclass
 class Keyframe:
@@ -144,6 +144,48 @@ class Track:
                 return k1.value + (k2.value - k1.value) * ratio
         return keys[-1].value
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "sr": self.sr,
+            "source_type": self.source_type.name,
+            "volume": self.volume,
+            "angle_deg": self.angle_deg,
+            "mute": self.mute,
+            "solo": self.solo,
+            "eq_low": self.eq_low,
+            "eq_mid": self.eq_mid,
+            "eq_high": self.eq_high,
+            "automations": [
+                {
+                    "param_type": a.param_type,
+                    "keyframes": [{"time": k.time, "value": k.value} for k in a.keyframes]
+                }
+                for a in self.automations
+            ]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], audio_data: np.ndarray) -> 'Track':
+        stype = getattr(SourceType, data.get("source_type", "AI_SEPARATED"), SourceType.AI_SEPARATED)
+        t = cls(data["name"], audio_data, sr=data["sr"], source_type=stype)
+        t.id = data.get("id", str(uuid.uuid4()))
+        t.volume = data.get("volume", 1.0)
+        t.angle_deg = data.get("angle_deg", 0.0)
+        t.mute = data.get("mute", False)
+        t.solo = data.get("solo", False)
+        t.eq_low = data.get("eq_low", 1.0)
+        t.eq_mid = data.get("eq_mid", 1.0)
+        t.eq_high = data.get("eq_high", 1.0)
+
+        for auto_data in data.get("automations", []):
+            clip = AutomationClip(param_type=auto_data["param_type"])
+            for k in auto_data.get("keyframes", []):
+                clip.add_keyframe(k["time"], k["value"])
+            t.automations.append(clip)
+        return t
+
 class ProjectContext:
     def __init__(self):
         self.tracks: list[Track] = []
@@ -156,6 +198,7 @@ class ProjectContext:
         self.is_looping: bool = False
         self.loop_start: int = 0
         self.loop_end: int = 0
+        self.video_path: str = ""  # [NEW] Video Path
         
         self.text_events: List[TextEvent] = []
         self.visual_events: List[VisualEvent] = []
@@ -187,6 +230,7 @@ class ProjectContext:
         self.is_looping = False
         self.loop_start = 0
         self.loop_end = 0
+        self.video_path = ""
         self.text_events = []
         self.visual_events = []
         self.bg_events = []
@@ -205,3 +249,61 @@ class ProjectContext:
                             r = (time - k1.time)/dur
                             return k1.value + (k2.value - k1.value)*r
         return default
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sample_rate": self.sample_rate,
+            "master_volume": self.master_volume,
+            "video_path": self.video_path, # [NEW]
+            "global_automations": [
+                {
+                    "param_type": a.param_type,
+                    "keyframes": [{"time": k.time, "value": k.value} for k in a.keyframes]
+                }
+                for a in self.global_automations
+            ],
+            "subtitles": [
+                {
+                    "start": s.start_time, "end": s.end_time, "text": s.text, 
+                    "lang": s.language, "font_size": s.font_size, "color": s.color_hex
+                } for s in self.subtitles
+            ],
+            "text_events": [ # [NEW]
+                {
+                    "text": t.text, "start": t.start_time, "end": t.end_time,
+                    "x": t.x, "y": t.y, "font": t.font_family, "size": t.font_size,
+                    "color": t.color_hex, "bold": t.bold, "italic": t.italic
+                } for t in self.text_events
+            ]
+        }
+
+    def load_from_dict(self, data: Dict[str, Any]):
+        self.sample_rate = data.get("sample_rate", 44100)
+        self.master_volume = data.get("master_volume", 1.0)
+        self.video_path = data.get("video_path", "")
+        
+        self.subtitles = []
+        for s in data.get("subtitles", []):
+            item = SubtitleItem(
+                start_time=s["start"], end_time=s["end"], text=s["text"], language=s.get("lang", "")
+            )
+            item.font_size = s.get("font_size", 36)
+            item.color_hex = s.get("color", "#FFFF00")
+            self.subtitles.append(item)
+            
+        self.text_events = []
+        for t in data.get("text_events", []):
+            evt = TextEvent(
+                text=t["text"], start_time=t["start"], end_time=t["end"],
+                x=t.get("x",50), y=t.get("y",100), font_family=t.get("font","Arial"),
+                font_size=t.get("size",40), color_hex=t.get("color","#FFFFFF"),
+                bold=t.get("bold",False), italic=t.get("italic",False)
+            )
+            self.text_events.append(evt)
+
+        self.global_automations = []
+        for auto_data in data.get("global_automations", []):
+            clip = AutomationClip(param_type=auto_data["param_type"])
+            for k in auto_data.get("keyframes", []):
+                clip.add_keyframe(k["time"], k["value"])
+            self.global_automations.append(clip)

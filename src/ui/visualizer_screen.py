@@ -1,495 +1,406 @@
 import math
 import numpy as np
-from PyQt6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QTabWidget, QFormLayout, 
-                             QSlider, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, 
-                             QCheckBox, QLabel, QGroupBox, QFontComboBox, 
-                             QColorDialog, QDialogButtonBox, QLineEdit)
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPoint, QPointF, QRect
+from PyQt6.QtWidgets import (QWidget, QDialog, QPushButton)
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPoint, QPointF
 from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QFont, QFontMetrics, 
-                         QPixmap, QImage, QPolygonF, QLinearGradient)
+                         QPixmap, QImage, QLinearGradient, QPainterPath)
 from PyQt6.QtMultimedia import QVideoSink, QVideoFrame
 
-# --- Settings Dialog ---
+# --- Settings Dialog (호환성 유지용) ---
 class VisualizerSettingsDialog(QDialog):
     textAdded = pyqtSignal(str, float)
-
     def __init__(self, parent=None, current_settings=None):
         super().__init__(parent)
-        self.setWindowTitle("Visualizer Detailed Settings")
-        self.resize(500, 800)
-        self.setStyleSheet("""
-            QDialog { background-color: #2b2b2b; color: white; }
-            QLabel, QCheckBox { color: white; }
-            QPushButton { background: #444; color: white; padding: 5px; border: 1px solid #666; }
-            QSpinBox, QDoubleSpinBox, QComboBox, QFontComboBox, QLineEdit { background: #333; color: white; border: 1px solid #555; }
-            QGroupBox { border: 1px solid #555; margin-top: 10px; padding-top: 15px; }
-        """)
-        
-        main_layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
+        pass
 
-        self.tab_spectrum = QWidget()
-        self._init_spectrum_tab()
-        self.tabs.addTab(self.tab_spectrum, "Spectrum")
-
-        self.tab_text = QWidget()
-        self._init_text_tab()
-        self.tabs.addTab(self.tab_text, "Text Creation & Style")
-
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        main_layout.addWidget(self.buttons)
-
-        if current_settings:
-            self._load_settings(current_settings)
-
-    def _init_spectrum_tab(self):
-        layout = QFormLayout(self.tab_spectrum)
-        self.sld_opacity = QSlider(Qt.Orientation.Horizontal); self.sld_opacity.setRange(0, 100)
-        self.combo_shape = QComboBox(); self.combo_shape.addItems(["Linear", "Circular", "Line"])
-        self.combo_style = QComboBox(); self.combo_style.addItems(["Bar", "Line"])
-        self.spin_thick = QSpinBox(); self.spin_thick.setRange(1, 100)
-        self.spin_scale = QDoubleSpinBox(); self.spin_scale.setRange(0.1, 20.0); self.spin_scale.setSingleStep(0.1)
-        self.spin_height = QDoubleSpinBox(); self.spin_height.setRange(0.1, 100.0)
-        self.spin_bar_count = QSpinBox(); self.spin_bar_count.setRange(10, 256); self.spin_bar_count.setValue(60)
-        self.spin_radius = QDoubleSpinBox(); self.spin_radius.setRange(0.0, 1.0); self.spin_radius.setSingleStep(0.05); self.spin_radius.setValue(0.3)
-        
-        self.btn_color_bot = QPushButton("Start Color"); self.btn_color_bot.clicked.connect(lambda: self.pick_color('bot'))
-        self.btn_color_top = QPushButton("End Color"); self.btn_color_top.clicked.connect(lambda: self.pick_color('top'))
-        self.btn_color_ov = QPushButton("Mask Color"); self.btn_color_ov.clicked.connect(lambda: self.pick_color('ov'))
-        
-        self.chk_mask = QCheckBox("Enable Mask Mode (투명 구멍)")
-        self.col_bot = QColor(0,0,255); self.col_top = QColor(0,255,255); self.col_ov = QColor(0,0,0)
-
-        layout.addRow("BG Opacity:", self.sld_opacity)
-        layout.addRow("Bar Count:", self.spin_bar_count)
-        layout.addRow("Shape:", self.combo_shape)
-        layout.addRow("Radius (Circular):", self.spin_radius)
-        layout.addRow("Draw Style:", self.combo_style)
-        layout.addRow("Thickness:", self.spin_thick)
-        layout.addRow("Sensitivity:", self.spin_scale)
-        layout.addRow("Height Scale:", self.spin_height)
-        layout.addRow(self.btn_color_bot, self.btn_color_top)
-        layout.addRow("Mask Color:", self.btn_color_ov)
-        layout.addRow(self.chk_mask)
-
-    def _init_text_tab(self):
-        layout = QVBoxLayout(self.tab_text)
-        
-        create_grp = QGroupBox("Create New Text")
-        cl = QFormLayout(create_grp)
-        self.txt_input = QLineEdit()
-        self.spin_duration = QDoubleSpinBox(); self.spin_duration.setValue(5.0)
-        self.btn_create_text = QPushButton("Create Text")
-        self.btn_create_text.clicked.connect(self._on_create_text)
-        cl.addRow("Content:", self.txt_input)
-        cl.addRow("Duration:", self.spin_duration)
-        cl.addRow(self.btn_create_text)
-        layout.addWidget(create_grp)
-        
-        style_grp = QGroupBox("Global Text Style")
-        sl = QFormLayout(style_grp)
-        self.sld_text_op = QSlider(Qt.Orientation.Horizontal); self.sld_text_op.setRange(0, 100); self.sld_text_op.setValue(100)
-        self.chk_text_mask = QCheckBox("Text Masking Mode")
-        self.font_fam = QFontComboBox()
-        self.spin_size = QSpinBox(); self.spin_size.setRange(10, 300)
-        self.chk_bold = QCheckBox("Bold")
-        self.chk_italic = QCheckBox("Italic")
-        
-        sl.addRow("Opacity:", self.sld_text_op)
-        sl.addRow(self.chk_text_mask)
-        sl.addRow("Font:", self.font_fam)
-        sl.addRow("Size:", self.spin_size)
-        sl.addRow(self.chk_bold, self.chk_italic)
-        layout.addWidget(style_grp)
-        layout.addStretch()
-
-    def _on_create_text(self):
-        text = self.txt_input.text()
-        if text:
-            self.textAdded.emit(text, self.spin_duration.value())
-            self.txt_input.clear()
-
-    def pick_color(self, mode):
-        t = self.col_bot if mode=='bot' else (self.col_top if mode=='top' else self.col_ov)
-        c = QColorDialog.getColor(t, self, "Pick Color")
-        if c.isValid():
-            if mode=='bot': self.col_bot = c
-            elif mode=='top': self.col_top = c
-            else: self.col_ov = c
-            btn = self.btn_color_bot if mode=='bot' else (self.btn_color_top if mode=='top' else self.btn_color_ov)
-            btn.setStyleSheet(f"background: {c.name()}; color: {'black' if c.lightness()>128 else 'white'};")
-
-    def _load_settings(self, s):
-        self.sld_opacity.setValue(int(s.get('bg_opacity', 1.0)*100))
-        self.spin_bar_count.setValue(s.get('bar_count', 60))
-        self.spin_radius.setValue(s.get('radius', 0.3))
-        
-        shape_idx = 0
-        if s.get('shape') == 'circular': shape_idx = 1
-        elif s.get('shape') == 'line': shape_idx = 2
-        self.combo_shape.setCurrentIndex(shape_idx)
-        
-        self.spin_scale.setValue(s.get('scale', 0.1))
-        self.spin_height.setValue(s.get('height_scale', 1.0))
-        self.spin_thick.setValue(s.get('thickness', 5))
-        self.chk_mask.setChecked(s.get('mask_mode', False))
-        
-        self.col_bot = s.get('color_bot', QColor(0,0,255))
-        self.col_top = s.get('color_top', QColor(0,255,255))
-        self.col_ov = s.get('color_overlay', QColor(0,0,0))
-        
-        for mode, col in [('bot', self.col_bot), ('top', self.col_top), ('ov', self.col_ov)]:
-            btn = self.btn_color_bot if mode=='bot' else (self.btn_color_top if mode=='top' else self.btn_color_ov)
-            btn.setStyleSheet(f"background: {col.name()}; color: {'black' if col.lightness()>128 else 'white'};")
-
-        self.sld_text_op.setValue(int(s.get('text_opacity', 1.0)*100))
-        self.chk_text_mask.setChecked(s.get('text_mask_mode', False))
-        
-        sub = s.get('sub_cfg', {})
-        self.font_fam.setCurrentFont(QFont(sub.get('font', 'Arial')))
-        self.spin_size.setValue(sub.get('size', 30))
-        self.chk_bold.setChecked(sub.get('bold', False))
-        self.chk_italic.setChecked(sub.get('italic', False))
-
-    def get_settings(self):
-        idx = self.combo_shape.currentIndex()
-        shape = 'linear'
-        if idx == 1: shape = 'circular'
-        elif idx == 2: shape = 'line'
-        
-        return {
-            'bg_opacity': self.sld_opacity.value()/100,
-            'bar_count': self.spin_bar_count.value(),
-            'shape': shape,
-            'radius': self.spin_radius.value(),
-            'draw_mode': 'bar',
-            'thickness': self.spin_thick.value(),
-            'scale': self.spin_scale.value(),
-            'height_scale': self.spin_height.value(),
-            'mask_mode': self.chk_mask.isChecked(),
-            'color_bot': self.col_bot, 'color_top': self.col_top, 'color_overlay': self.col_ov,
-            'text_opacity': self.sld_text_op.value()/100,
-            'text_mask_mode': self.chk_text_mask.isChecked(),
-            'sub_cfg': {
-                'font': self.font_fam.currentFont().family(),
-                'size': self.spin_size.value(),
-                'bold': self.chk_bold.isChecked(),
-                'italic': self.chk_italic.isChecked()
-            }
-        }
-
-# --- Main Screen ---
+# --- Main Visualizer Screen ---
 class VisualizerScreen(QWidget):
     settingsChanged = pyqtSignal(dict) 
     settingsRequested = pyqtSignal()
 
     def __init__(self, ctx=None, parent=None):
         super().__init__(parent)
-        self.ctx = ctx # Need context to access subtitles
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMouseTracking(True)
-        self.setMinimumHeight(300)
+        self.ctx = ctx 
         
+        # 렌더링 설정
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setMouseTracking(True)
+        self.setMinimumHeight(350)
+        
+        # [영상] 비디오 싱크 (데이터 수신 전용)
         self.video_sink = QVideoSink()
         self.video_sink.videoFrameChanged.connect(self._on_video_frame)
         self.current_video_frame = None
-        self.audio_data = None
+        
+        # [오디오] 데이터 처리 변수
+        self.audio_buffer = None
         self.bar_count = 60
+        self.fft_data = np.zeros(self.bar_count)
         self.decay = np.zeros(self.bar_count)
+        
         self.bg_pixmap = None
         self.use_bg_image = False
         
-        # Init Settings
-        self.show_spectrum = True 
-        self.bg_opacity = 1.0
-        self.shape = 'linear'
-        self.radius = 0.3
-        self.draw_mode = 'bar'
-        self.thickness = 5
-        self.scale = 0.1 
-        self.height_scale = 1.0
-        self.color_bot = QColor(0,0,255); self.color_top = QColor(0,255,255); self.color_overlay = QColor(0,0,0)
-        self.mask_mode = False 
-        self.text_opacity = 1.0
-        self.text_mask_mode = False
-        self.sub_cfg = {'text':'', 'size':30, 'font':'Arial', 'bold':False, 'italic':False, 'x':50, 'y':100}
+        # [설정] 모든 속성 초기화
+        self.settings = {
+            "show_spectrum": True,      
+            "bg_opacity": 1.0,
+            
+            # Geometry
+            "shape": "linear",          # linear, circular, line
+            "bar_count": 64,
+            "bar_gap": 2,
+            "inner_radius": 50,         # Circle 모드 내부 반지름
+            "radius": 50,               # 호환성용
+            
+            # Physics
+            "sensitivity": 150,
+            "scale": 1.0,               # 호환성용
+            "smoothing": 0.5,
+            "log_scale": True,
+            "min_freq": 20,
+            "max_freq": 16000,
+            "height_scale": 1.0,
+            
+            # Appearance
+            "color_bot": QColor(0, 0, 255),
+            "color_top": QColor(0, 255, 255),
+            "color_overlay": QColor(0, 0, 0),
+            "fill": True,
+            "round_caps": False,
+            "stroke_width": 2,
+            "mask_mode": False,
+            
+            # Internal Control
+            "spec_visible": False       # 기본값 False (타임라인 이벤트로만 켜짐)
+        }
         
-        self.spec_visible = True
-        self.spec_scale_factor = 1.0
-        self.spec_shape_override = -1 # -1: use settings, 0:linear, 1:circ, 2:line
-
+        self.sub_cfg = {
+            'text': '', 'size': 36, 'font': 'Arial', 
+            'bold': False, 'italic': False, 'color': '#FFFFFF',
+            'x': -1, 'y': -1
+        }
+        
+        # 인터랙션 상태
         self._dragging_target = None
         self._drag_start_pos = QPoint()
-        self._drag_start_elem_pos = QPoint()
+        self._elem_start_pos = QPoint()
         
-        self.btn_settings = QPushButton("⚙ Settings", self)
-        self.btn_settings.setGeometry(self.width()-90, 10, 80, 30)
-        self.btn_settings.setStyleSheet("background: rgba(0,0,0,150); color: white; border: 1px solid white; border-radius: 4px;")
-        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_settings.clicked.connect(self.settingsRequested.emit)
+        # 설정 버튼
+        #self.btn_settings = QPushButton("⚙ Settings", self)
+        #self.btn_settings.setGeometry(self.width()-90, 10, 80, 30)
+        #self.btn_settings.setStyleSheet("background: rgba(0,0,0,150); color: white; border: 1px solid white; border-radius: 4px;")
+        #self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        #self.btn_settings.clicked.connect(self.settingsRequested.emit)
 
     def resizeEvent(self, e):
-        self.btn_settings.move(self.width()-90, 10)
+        #self.btn_settings.move(self.width()-90, 10)
+        # [수정 완료] self.video_sink.resize(...) 삭제됨
         super().resizeEvent(e)
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            pos = e.position().toPoint()
-            if self._hit_test(pos):
-                self._dragging_target = 'sub'; self._drag_start_pos = pos
-                self._drag_start_elem_pos = QPoint(self.sub_cfg['x'], self.sub_cfg['y'])
-                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+    # [메서드] 메인 윈도우 호환성
+    def set_settings(self, data: dict):
+        self.update_settings(data)
 
-    def mouseMoveEvent(self, e):
-        if self._dragging_target == 'sub':
-            delta = e.position().toPoint() - self._drag_start_pos
-            self.sub_cfg['x'] = self._drag_start_elem_pos.x() + delta.x()
-            self.sub_cfg['y'] = self._drag_start_elem_pos.y() + delta.y()
-            self.update()
+    def update_settings(self, data: dict):
+        # 키 매핑 및 업데이트
+        if 'scale' in data: self.settings['sensitivity'] = float(data['scale']) * 100
+        if 'sensitivity' in data: self.settings['scale'] = float(data['sensitivity']) / 150.0
+        
+        if 'color' in data:
+            c = QColor(data['color'])
+            self.settings['color_top'] = c
+            self.settings['color_bot'] = c.darker(200)
+            
+        for k, v in data.items():
+            if k in self.settings:
+                self.settings[k] = v
+        
+        self.update()
 
-    def mouseReleaseEvent(self, e):
-        self._dragging_target = None; self.setCursor(Qt.CursorShape.ArrowCursor)
+    # [메서드] 오디오 처리 (FFT)
+    def set_audio_data(self, data: np.ndarray):
+        if data is None:
+            self.audio_buffer = None
+            self.decay *= 0.9 # 서서히 줄어듦
+        else:
+            self.audio_buffer = data
+            self._compute_fft()
+        self.update()
 
-    def _hit_test(self, pos):
-        return bool(self.sub_cfg.get('text'))
+    def _compute_fft(self):
+        if self.audio_buffer is None or len(self.audio_buffer) < 2: return
 
+        # Mono Mix
+        if self.audio_buffer.ndim > 1: samples = self.audio_buffer.mean(axis=1)
+        else: samples = self.audio_buffer
+
+        # Windowing
+        n = len(samples)
+        window = np.hanning(n)
+        fft_raw = np.abs(np.fft.rfft(samples * window))
+        
+        # Binning
+        bar_count = self.settings.get('bar_count', 64)
+        if len(self.decay) != bar_count:
+            self.decay = np.zeros(bar_count)
+            
+        freq_bins = len(fft_raw)
+        new_fft = np.zeros(bar_count)
+        
+        # Log Scale or Linear
+        if self.settings.get('log_scale', True):
+            log_idxs = np.logspace(0, np.log10(freq_bins), num=bar_count + 1, dtype=int)
+            log_idxs = np.unique(log_idxs)
+            if len(log_idxs) < bar_count + 1:
+                log_idxs = np.linspace(0, freq_bins, bar_count + 1, dtype=int)
+            
+            for i in range(len(log_idxs)-1):
+                start, end = log_idxs[i], log_idxs[i+1]
+                if end <= start: end = start + 1
+                segment = fft_raw[start:end]
+                new_fft[i] = np.mean(segment) if len(segment) > 0 else 0
+        else:
+            chunk = freq_bins // bar_count
+            for i in range(bar_count):
+                start = i * chunk
+                end = start + chunk
+                segment = fft_raw[start:end]
+                new_fft[i] = np.mean(segment) if len(segment) > 0 else 0
+
+        # Scaling & Smoothing
+        sens = self.settings.get('scale', 1.0)
+        height_scale = self.settings.get('height_scale', 1.0)
+        target = np.log10(new_fft + 1.0) * 100.0 * sens * height_scale
+        
+        smooth = self.settings.get('smoothing', 0.5)
+        self.decay = self.decay * smooth + target * (1 - smooth)
+
+    # [메서드] 비디오/이미지 처리
     def _on_video_frame(self, frame: QVideoFrame):
         if frame.isValid():
             self.current_video_frame = frame.toImage()
             self.update()
 
-    def set_settings(self, s):
-        self.bg_opacity = s.get('bg_opacity', 1.0)
-        self.bar_count = s.get('bar_count', 60)
-        self.shape = s.get('shape', 'linear')
-        self.radius = s.get('radius', 0.3)
-        self.draw_mode = s.get('draw_mode', 'bar')
-        self.thickness = s.get('thickness', 5)
-        self.scale = s.get('scale', 0.1)
-        self.height_scale = s.get('height_scale', 1.0)
-        self.mask_mode = s.get('mask_mode', False)
-        self.color_bot = s.get('color_bot')
-        self.color_top = s.get('color_top')
-        self.color_overlay = s.get('color_overlay')
-        self.text_opacity = s.get('text_opacity', 1.0)
-        self.text_mask_mode = s.get('text_mask_mode', False)
-        self.sub_cfg.update(s.get('sub_cfg', {}))
+    def set_background_image(self, path):
+        if path: self.bg_pixmap = QImage(path); self.use_bg_image = True
+        else: self.bg_pixmap = None; self.use_bg_image = False
+        self.update()
         
-        if len(self.decay) != self.bar_count: self.decay = np.zeros(self.bar_count)
-        self.update()
-
-    def get_settings(self):
-        return {
-            'bg_opacity': self.bg_opacity, 'bar_count': self.bar_count, 'shape': self.shape, 'radius': self.radius,
-            'draw_mode': self.draw_mode, 'thickness': self.thickness, 'scale': self.scale,
-            'height_scale': self.height_scale, 'mask_mode': self.mask_mode,
-            'color_bot': self.color_bot, 'color_top': self.color_top, 'color_overlay': self.color_overlay,
-            'text_opacity': self.text_opacity, 'text_mask_mode': self.text_mask_mode,
-            'sub_cfg': self.sub_cfg
-        }
-
-    def set_audio_data(self, data: np.ndarray):
-        if data is None: self.audio_data = None
-        else: self.audio_data = np.mean(data, axis=1)
-        self.update()
-
-    def set_background_image(self, path: str):
-        if not path: self.bg_pixmap = None; self.use_bg_image = False
-        else: self.bg_pixmap = QPixmap(path); self.use_bg_image = True; self.current_video_frame = None
-        self.update()
-
     def clear_background(self):
-        self.use_bg_image = False; self.current_video_frame = None; self.update()
-
-    def _process_fft(self):
-        if self.audio_data is None or len(self.audio_data) < 100: return np.zeros(self.bar_count)
-        windowed = self.audio_data * np.hanning(len(self.audio_data))
-        fft = np.fft.rfft(windowed)
-        mag = np.abs(fft) * 100.0
-        if len(mag) > self.bar_count:
-            step = len(mag) // self.bar_count
-            binned = np.array([np.mean(mag[i*step:(i+1)*step]) for i in range(self.bar_count)])
-        else: binned = np.zeros(self.bar_count)
+        self.bg_pixmap = None; self.use_bg_image = False; self.update()
         
-        final_scale = self.scale * self.spec_scale_factor
-        binned = np.log10(binned + 1.0) * 300.0 * final_scale
-        self.decay = np.maximum(self.decay * 0.80, binned)
-        return self.decay
+    def get_settings(self): return self.settings
 
-    def _get_draw_rect(self, w, h):
-        img = self.bg_pixmap if (self.use_bg_image and self.bg_pixmap) else self.current_video_frame
-        if img:
-            img_ratio = img.width() / img.height()
-            widget_ratio = w / h
-            if img_ratio > widget_ratio:
-                new_h = w / img_ratio
-                return QRectF(0, (h - new_h) / 2, w, new_h)
+    # [이벤트] 마우스 인터랙션 (자막 드래그)
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self.sub_cfg['text'] and e.position().y() > self.height() * 0.7:
+                self._dragging_target = 'sub'
+                self._drag_start_pos = e.position().toPoint()
+                self._elem_start_pos = QPoint(
+                    self.sub_cfg.get('x', self.width()//2), 
+                    self.sub_cfg.get('y', self.height()-50)
+                )
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
             else:
-                new_w = h * img_ratio
-                return QRectF((w - new_w) / 2, 0, new_w, h)
-        return QRectF(0, 0, w, h)
+                super().mousePressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        if self._dragging_target == 'sub':
+            delta = e.position().toPoint() - self._drag_start_pos
+            self.sub_cfg['x'] = self._elem_start_pos.x() + delta.x()
+            self.sub_cfg['y'] = self._elem_start_pos.y() + delta.y()
+            self.update()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._dragging_target = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        self.settingsRequested.emit()
+
+    # [렌더링] Paint Event
     def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         w, h = self.width(), self.height()
 
-        p.fillRect(0, 0, w, h, QColor(20, 20, 20))
-
-        draw_rect = self._get_draw_rect(w, h)
+        # 1. 배경
+        painter.fillRect(self.rect(), QColor(0, 0, 0))
         
-        if not self.use_bg_image and self.current_video_frame is None:
-            p.setPen(QPen(QColor(50, 50, 50), 1, Qt.PenStyle.DotLine))
-            for x in range(0, w, 50): p.drawLine(x, 0, x, h)
-            for y in range(0, h, 50): p.drawLine(0, y, w, y)
-
+        # 이미지 / 비디오
+        opacity = self.settings.get('bg_opacity', 1.0)
+        draw_rect = self.rect() # 전체 화면 채우기
+        
         if self.use_bg_image and self.bg_pixmap:
-            p.setOpacity(self.bg_opacity)
-            p.drawPixmap(draw_rect.toRect(), self.bg_pixmap)
-            p.setOpacity(1.0)
+            painter.setOpacity(opacity)
+            painter.drawImage(draw_rect, self.bg_pixmap)
+            painter.setOpacity(1.0)
         elif self.current_video_frame:
-            p.setOpacity(self.bg_opacity)
-            p.drawImage(draw_rect.toRect(), self.current_video_frame)
-            p.setOpacity(1.0)
+            painter.setOpacity(opacity)
+            painter.drawImage(draw_rect, self.current_video_frame)
+            painter.setOpacity(1.0)
 
-        # Draw Spectrum if Visible
-        if self.spec_visible:
-            need_masking = self.mask_mode or self.text_mask_mode
+        # 2. 스펙트럼 (spec_visible이 True이고 show_spectrum이 True일 때만)
+        if self.settings.get('spec_visible', False) and self.settings.get('show_spectrum', True):
+            self._draw_spectrum_main(painter, w, h)
+
+        # 3. 자막
+        if self.sub_cfg.get('text'):
+            self._draw_subtitle(painter, w, h)
+
+        painter.end()
+
+    def _draw_spectrum_main(self, p, w, h):
+        """마스킹 모드 등을 고려하여 스펙트럼 그리기 분기"""
+        mask_mode = self.settings.get('mask_mode', False)
+        text_mask = self.settings.get('text_mask_mode', False)
+        
+        if mask_mode or text_mask:
+            # 버퍼에 그려서 합성 (CompositionMode)
+            buffer = QPixmap(w, h)
+            buffer.fill(Qt.GlobalColor.transparent)
+            pb = QPainter(buffer)
+            pb.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            if need_masking:
-                buffer = QPixmap(w, h)
-                buffer.fill(Qt.GlobalColor.transparent)
-                pb = QPainter(buffer)
-                pb.setRenderHint(QPainter.RenderHint.Antialiasing)
-                
-                if self.mask_mode: 
-                    pb.fillRect(draw_rect, self.color_overlay)
-                
-                if self.show_spectrum:
-                    decay_data = self._process_fft()
-                    op = QPainter.CompositionMode.CompositionMode_DestinationOut if self.mask_mode else QPainter.CompositionMode.CompositionMode_SourceOver
-                    pb.setCompositionMode(op)
-                    self._draw_spectrum_impl(pb, draw_rect, decay_data, self.mask_mode)
-                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-
-                if self.text_mask_mode:
-                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-                    self._draw_text(pb, self.sub_cfg, True, draw_rect)
-                    pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-                else:
-                    self._draw_text(pb, self.sub_cfg, False, draw_rect)
-                
-                pb.end()
-                p.drawPixmap(0, 0, buffer)
+            # 마스크 모드면 배경색(Overlay)을 먼저 깔고 뚫음
+            if mask_mode:
+                pb.fillRect(0, 0, w, h, self.settings.get('color_overlay', QColor(0,0,0)))
+                op = QPainter.CompositionMode.CompositionMode_DestinationOut
             else:
-                if self.show_spectrum:
-                    decay_data = self._process_fft()
-                    self._draw_spectrum_impl(p, draw_rect, decay_data, False)
-                self._draw_text(p, self.sub_cfg, False, draw_rect)
+                op = QPainter.CompositionMode.CompositionMode_SourceOver
+            
+            pb.setCompositionMode(op)
+            self._draw_spectrum_impl(pb, w, h, mask_mode)
+            pb.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            
+            pb.end()
+            p.drawPixmap(0, 0, buffer)
+        else:
+            # 일반 그리기
+            self._draw_spectrum_impl(p, w, h, False)
 
-        # Draw Subtitles (Always Top)
-        if self.ctx:
-            ct = self.ctx.current_frame / self.ctx.sample_rate
-            self._draw_subtitles(p, w, h, ct)
+    def _draw_spectrum_impl(self, p, w, h, is_mask):
+        data = self.decay
+        cnt = len(data)
+        if cnt == 0: return
 
-        p.end()
-
-    def _draw_spectrum_impl(self, p, rect, data, is_mask):
+        # 설정값 가져오기
+        shape = self.settings.get('shape', 'linear')
+        fill = self.settings.get('fill', True)
+        round_caps = self.settings.get('round_caps', False)
+        stroke = self.settings.get('stroke_width', 2)
+        
+        color_top = self.settings.get('color_top', QColor('cyan'))
+        color_bot = self.settings.get('color_bot', QColor('blue'))
+        
+        # 브러시/펜 설정
         if is_mask:
-            p.setBrush(QBrush(QColor(255, 255, 255)))
+            p.setBrush(QBrush(QColor(255, 255, 255))) # 마스크는 흰색으로 뚫음
             p.setPen(Qt.PenStyle.NoPen)
         else:
-            grad = QLinearGradient(rect.left(), rect.bottom(), rect.left(), rect.top())
-            grad.setColorAt(0, self.color_bot); grad.setColorAt(1, self.color_top)
-            p.setBrush(QBrush(grad)); p.setPen(Qt.PenStyle.NoPen)
+            if fill and shape != 'line':
+                grad = QLinearGradient(0, h, 0, 0)
+                grad.setColorAt(0, color_bot)
+                grad.setColorAt(1, color_top)
+                p.setBrush(QBrush(grad))
+                p.setPen(Qt.PenStyle.NoPen)
+            else:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                pen = QPen(color_top, stroke)
+                if round_caps: pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
 
-        cnt = len(data)
-        w, h = rect.width(), rect.height()
-        x0, y0 = rect.x(), rect.y()
-        
-        shape_type = self.shape
-        if self.spec_shape_override >= 0:
-            shape_type = ['linear', 'circular', 'line'][int(self.spec_shape_override) % 3]
+        # 1. Linear Bar
+        if shape == 'linear':
+            gap = self.settings.get('bar_gap', 2)
+            total_gap = gap * (cnt - 1)
+            bar_w = (w - total_gap) / cnt
+            if bar_w < 1: bar_w = 1
+            
+            for i in range(cnt):
+                val = data[i]
+                bar_h = min(h, val * (h / 20))
+                x = i * (bar_w + gap)
+                y = h - bar_h
+                
+                if fill:
+                    if round_caps: p.drawRoundedRect(QRectF(x, y, bar_w, bar_h), bar_w/2, bar_w/2)
+                    else: p.drawRect(QRectF(x, y, bar_w, bar_h))
+                else:
+                    path = QPainterPath()
+                    path.moveTo(x, h); path.lineTo(x, y); path.lineTo(x+bar_w, y); path.lineTo(x+bar_w, h)
+                    p.drawPath(path)
 
-        if shape_type == 'circular':
-            cx, cy = x0 + w/2, y0 + h/2
-            radius = min(w, h) * self.radius
+        # 2. Circular
+        elif shape == 'circular' or shape == 'circle': 
+            cx, cy = w / 2, h / 2
+            r_val = self.settings.get('radius', 50)
+            radius = r_val if r_val > 1 else min(w, h) * r_val
             angle_step = 2 * math.pi / cnt
             
-            pen = QPen(self.color_top, self.thickness)
-            if is_mask: pen.setColor(Qt.GlobalColor.white)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            
+            p.save()
+            p.translate(cx, cy)
             for i in range(cnt):
-                val = data[i] * self.height_scale * 2.0
-                angle = i * angle_step - (math.pi / 2)
-                ox = cx + (radius + val) * math.cos(angle)
-                oy = cy + (radius + val) * math.sin(angle)
-                ix = cx + radius * math.cos(angle)
-                iy = cy + radius * math.sin(angle)
-                p.drawLine(QPointF(ix, iy), QPointF(ox, oy))
-                
-        elif shape_type == 'line':
+                val = data[i] * self.settings.get('height_scale', 1.0) * 2.0
+                p.save()
+                p.rotate(math.degrees(i * angle_step))
+                if fill:
+                    circum = 2 * math.pi * radius
+                    bw = max(1, (circum / cnt) - self.settings.get('bar_gap', 2))
+                    if round_caps: p.drawRoundedRect(QRectF(-bw/2, -radius - val, bw, val), bw/2, bw/2)
+                    else: p.drawRect(QRectF(-bw/2, -radius - val, bw, val))
+                else:
+                    p.drawLine(QPointF(0, -radius), QPointF(0, -radius - val))
+                p.restore()
+            p.restore()
+
+        # 3. Line (Curve)
+        elif shape == 'line':
             path = QPainterPath()
             step_w = w / max(1, cnt-1)
-            path.moveTo(x0, y0 + h - (data[0] * self.height_scale))
+            path.moveTo(0, h - (data[0] * self.settings.get('height_scale', 1.0)))
             for i in range(1, cnt):
-                x = x0 + i * step_w
-                y = y0 + h - (data[i] * self.height_scale)
-                path.lineTo(x, y)
-                
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            pen = QPen(self.color_top, self.thickness)
-            if is_mask: pen.setColor(Qt.GlobalColor.white)
-            p.setPen(pen)
+                x = i * step_w
+                y = h - (data[i] * self.settings.get('height_scale', 1.0))
+                prev_x = (i-1) * step_w
+                prev_y = h - (data[i-1] * self.settings.get('height_scale', 1.0))
+                ctrl1 = QPointF(prev_x + step_w/2, prev_y)
+                ctrl2 = QPointF(x - step_w/2, y)
+                path.cubicTo(ctrl1, ctrl2, QPointF(x, y))
+            if fill:
+                path.lineTo(w, h); path.lineTo(0, h); path.closeSubpath()
             p.drawPath(path)
-            
-        else:
-            rect_w = w * 0.8
-            bw = rect_w / cnt
-            start_x = x0 + (w - rect_w) / 2
-            for i in range(cnt):
-                bh = min(h, data[i] * self.height_scale)
-                bar_rect = QRectF(start_x + i*bw, y0 + h - bh, bw-1, bh)
-                p.drawRect(bar_rect)
 
-    def _draw_text(self, p, cfg, is_mask, draw_rect):
-        t = cfg.get('text', '')
-        if not t: return
-        f = QFont(cfg.get('font', 'Arial'), cfg.get('size', 30))
-        f.setBold(cfg.get('bold', False)); f.setItalic(cfg.get('italic', False))
+    def _draw_subtitle(self, p, w, h):
+        text = self.sub_cfg.get('text', '')
+        if not text: return
+        size = self.sub_cfg.get('size', 36)
+        col_str = self.sub_cfg.get('color', '#FFFFFF')
+        f = QFont(self.sub_cfg.get('font', 'Arial'), size)
+        f.setBold(self.sub_cfg.get('bold', False))
+        f.setItalic(self.sub_cfg.get('italic', False))
         p.setFont(f)
         
-        if is_mask: p.setPen(QColor(255, 255, 255))
-        else: 
-            c = QColor('white'); c.setAlphaF(self.text_opacity)
-            p.setPen(c)
-        p.drawText(cfg.get('x', 50), cfg.get('y', 100), t)
-
-    def _draw_subtitles(self, p, w, h, ct):
-        if not self.ctx.subtitles: return
-        # Find current active subtitle
-        cur = next((s for s in self.ctx.subtitles if s.start_time <= ct <= s.end_time), None)
-        if cur:
-            f = QFont("Malgun Gothic", cur.font_size, QFont.Weight.Bold)
-            p.setFont(f)
+        sx = self.sub_cfg.get('x', -1)
+        sy = self.sub_cfg.get('y', -1)
+        fm = QFontMetrics(f)
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        
+        if sx < 0 or sy < 0:
+            sx = (w - tw) / 2
+            sy = h - th - 50
+            self.sub_cfg['x'] = sx
+            self.sub_cfg['y'] = sy
             
-            fm = QFontMetrics(f)
-            tw = fm.horizontalAdvance(cur.text)
-            th = fm.height()
-            
-            # Bottom Center Layout
-            r = QRectF((w - tw)/2, h - 150, tw, th)
-            
-            # Shadow
-            p.setPen(QColor(0,0,0, 200))
-            p.drawText(r.adjusted(2,2,2,2), Qt.AlignmentFlag.AlignCenter, cur.text)
-            
-            # Text Body
-            p.setPen(QColor(cur.color_hex))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, cur.text)
+        path = QPainterPath()
+        path.addText(sx, sy + fm.ascent(), f, text)
+        p.setPen(QPen(QColor("black"), 3))
+        p.setBrush(QColor(col_str))
+        p.drawPath(path)

@@ -522,3 +522,67 @@ class PromptSeparationWorker(QThread):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
             print("[LOG] 종료.")
+
+# =========================================================================
+# [추가] Denoise Worker (노이즈 제거)
+# =========================================================================
+
+class DenoiseWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(Track)
+    failed = pyqtSignal(str)
+
+    def __init__(self, input_track: Track, amount: float = 1.0):
+        super().__init__()
+        self.input_track = input_track
+        self.amount = amount  # 0.0 ~ 1.0 (Strength)
+
+    def run(self):
+        try:
+            # Lazy import to avoid crash if library is missing
+            try:
+                import noisereduce as nr
+            except ImportError:
+                raise ImportError("'noisereduce' 라이브러리가 필요합니다. (pip install noisereduce)")
+
+            self.progress.emit(10, "노이즈 프로파일 분석 중...")
+            data = self.input_track.data
+            sr = self.input_track.sr
+            
+            # noisereduce expects (channels, samples) or (samples,)
+            # Track data is (samples, 2), so we need to transpose
+            if data.ndim == 2 and data.shape[1] == 2:
+                data_in = data.T  # (2, N)
+            else:
+                data_in = data
+            
+            self.progress.emit(30, f"AI 노이즈 제거 수행 중 (강도: {self.amount})...")
+            
+            # Perform noise reduction
+            reduced_data = nr.reduce_noise(
+                y=data_in, 
+                sr=sr, 
+                prop_decrease=self.amount,
+                n_std_thresh_stationary=1.5,
+                stationary=True  # Stationary noise reduction mode
+            )
+            
+            self.progress.emit(90, "트랙 생성 중...")
+            
+            # Transpose back to (samples, 2)
+            if reduced_data.ndim == 2:
+                reduced_data = reduced_data.T
+            
+            new_track = Track(
+                name=f"{self.input_track.name} (Denoised)",
+                data=reduced_data,
+                sr=sr,
+                source_type=SourceType.AI_SEPARATED
+            )
+            
+            self.progress.emit(100, "완료")
+            self.finished.emit(new_track)
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self.failed.emit(str(e))

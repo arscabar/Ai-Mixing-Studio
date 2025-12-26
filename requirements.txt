@@ -8,3 +8,6 @@ torch>=2.1
 torchaudio>=2.1
 transformers>=4.40
 accelerate>=0.30
+yt-dlp>=2023.0.0
+noisereduce>=3.0
+PyQt6-WebEngine>=6.5
