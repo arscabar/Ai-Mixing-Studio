@@ -261,20 +261,8 @@ class SubtitleGenerationWorker(QThread):
             self.failed.emit(str(e))
 
 # =========================================================================
-# [최종 수정] SAM Audio 워커 (Tensor original_sizes 적용 + MutableBatch)
+# [수정됨] SAM Audio 워커 - batch.sizes 문제 해결
 # =========================================================================
-
-# 모델에게 전달할 데이터 컨테이너 (dict + attr 접근 가능)
-class MutableBatch(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
-    
-    def __setattr__(self, name, value):
-        self[name] = value
-
 
 class PromptSeparationWorker(QThread):
     progress = pyqtSignal(int, str)
@@ -302,10 +290,9 @@ class PromptSeparationWorker(QThread):
             
             try:
                 from sam_audio import SAMAudio, SAMAudioProcessor
-                # BatchFeature 등 복잡한 객체 사용 안 함
                 print("[LOG] 라이브러리 임포트 성공")
             except ImportError:
-                 raise ImportError("Meta SAM Audio 라이브러리가 필요합니다.")
+                raise ImportError("Meta SAM Audio 라이브러리가 필요합니다.")
 
             model_id = "facebook/sam-audio-small"
             
@@ -338,19 +325,15 @@ class PromptSeparationWorker(QThread):
             final_target_parts = []
             final_residual_parts = []
             
-            model_sr = processor.audio_sampling_rate 
+            # model.sample_rate 사용 (audio_codec의 sample_rate)
+            model_sr = model.sample_rate
+            print(f"[LOG] 모델 sample_rate: {model_sr}")
 
-            print(f"[LOG] 총 {total_chunks}개 구간 처리 시작. (Input: {self.sr}Hz -> Model: {model_sr}Hz 리샘플링 예정)")
+            print(f"[LOG] 총 {total_chunks}개 구간 처리 시작. (Input: {self.sr}Hz -> Model: {model_sr}Hz)")
             self.progress.emit(10, f"작업 시작: 총 {total_chunks}개 구간 처리.")
 
-            # [FIX] 모델 입력을 위한 단순 클래스 정의 (호환성 문제 해결)
-            class SimpleBatch:
-                def __init__(self, **kwargs):
-                    for k, v in kwargs.items():
-                        setattr(self, k, v)
-
             for i in range(total_chunks):
-                if self.isInterruptionRequested(): 
+                if self.isInterruptionRequested():
                     print("[LOG] 중단 요청됨.")
                     return
                 
@@ -367,121 +350,119 @@ class PromptSeparationWorker(QThread):
                 chunk_path = os.path.join(temp_dir, f"chunk_{i}.wav")
                 sf.write(chunk_path, chunk_audio, self.sr)
 
-                # 5. Processor 실행 (데이터 읽기 전용)
-                raw_inputs = processor(audios=[chunk_path], descriptions=[self.prompt])
+                # 5. Processor 실행
+                batch = processor(audios=[chunk_path], descriptions=[self.prompt])
 
                 # =========================================================
-                # [FINAL FIX] 단순 객체(SimpleBatch)에 데이터 직접 이식
+                # [핵심 수정] batch.sizes 계산 및 주입
+                # model.separate()가 batch.sizes를 읽어서 unbatch()에 전달함
+                # sizes가 없으면 feature_idx_to_wav_idx(None) -> INT_MAX 오류
                 # =========================================================
                 
-                # 5-1. Processor 결과에서 데이터 추출 (딕셔너리화)
-                data_map = {}
-                # Processor가 반환하는 객체의 속성을 안전하게 추출
-                if hasattr(raw_inputs, 'data') and isinstance(raw_inputs.data, dict):
-                    data_map.update(raw_inputs.data)
-                elif isinstance(raw_inputs, dict):
-                    data_map.update(raw_inputs)
-                else:
-                    # 알 수 없는 객체일 경우 강제 추출
-                    try: data_map.update(vars(raw_inputs))
-                    except: pass
-                    # 필수 키 수동 확인
-                    for key in ['input_values', 'pixel_values', 'audios', 'input_features', 'input_ids', 'attention_mask']:
-                        if hasattr(raw_inputs, key):
-                            data_map[key] = getattr(raw_inputs, key)
-
-                # 5-2. SimpleBatch 객체 생성 및 텐서 변환
-                clean_inputs = SimpleBatch()
-                
+                # 5-1. 오디오 텐서 찾기 및 길이 계산
                 audio_tensor = None
-                tensor_key_name = None
+                if hasattr(batch, 'audios') and batch.audios is not None:
+                    audio_tensor = batch.audios
                 
-                for k, v in data_map.items():
-                    if k == 'original_sizes': continue # 수동 설정을 위해 제외
-                    
-                    # 리스트 -> 텐서
-                    if isinstance(v, list):
-                        if len(v) > 0 and isinstance(v[0], torch.Tensor):
-                            v = torch.stack(v)
-                        else:
-                            try: v = torch.tensor(v)
-                            except: pass
-                    elif isinstance(v, np.ndarray):
-                        v = torch.from_numpy(v)
-                    
-                    # GPU/FP16 이동
-                    if isinstance(v, torch.Tensor):
-                        if k in ['input_values', 'audios', 'input_features']:
-                            audio_tensor = v
-                            tensor_key_name = k
-                            
-                        v = v.to(self.device)
-                        if v.is_floating_point():
-                            v = v.to(dtype=target_dtype)
-                    
-                    # 객체 속성으로 주입
-                    setattr(clean_inputs, k, v)
-
-                # 5-3. [핵심] 오디오 텐서 차원 보정 및 Original Sizes 주입
-                # audio_tensor가 발견되지 않았을 경우 대비
                 if audio_tensor is None:
-                    # clean_inputs에서 다시 탐색
-                    for k in ['input_values', 'audios', 'input_features']:
-                        if hasattr(clean_inputs, k):
-                            audio_tensor = getattr(clean_inputs, k)
-                            tensor_key_name = k
-                            break
+                    raise ValueError(f"[{i+1}] batch에서 audios를 찾을 수 없습니다")
                 
-                if audio_tensor is not None:
-                    # GPU에 올라간 최신 텐서 가져오기
-                    curr_tensor = getattr(clean_inputs, tensor_key_name)
+                # 리스트인 경우 첫 번째 요소 사용
+                if isinstance(audio_tensor, list):
+                    if len(audio_tensor) > 0 and isinstance(audio_tensor[0], torch.Tensor):
+                        audio_tensor = audio_tensor[0]
+                    else:
+                        audio_tensor = torch.tensor(audio_tensor)
+                
+                # 오디오 샘플 수 (model_sr 기준)
+                audio_length_samples = audio_tensor.shape[-1]
+                print(f"[LOG] [{i+1}] audio_tensor shape: {audio_tensor.shape}, samples: {audio_length_samples}")
+                
+                # 5-2. feature 길이 계산 (codec의 downsample ratio)
+                # DAC codec은 보통 hop_length=512 사용
+                try:
+                    if hasattr(model, 'audio_codec'):
+                        codec = model.audio_codec
+                        if hasattr(codec, 'hop_length'):
+                            hop = codec.hop_length
+                        elif hasattr(codec, 'downsample_rate'):
+                            hop = codec.downsample_rate
+                        elif hasattr(codec, 'encoder') and hasattr(codec.encoder, 'hop_length'):
+                            hop = codec.encoder.hop_length
+                        else:
+                            hop = 512  # DAC 기본값
+                    else:
+                        hop = 512
                     
-                    # 실제 길이 계산 (Time Dimension)
-                    real_len = curr_tensor.shape[-1]
-                    
-                    # (1) 차원 보정: (Batch, Time) -> (Batch, 1, Time)
-                    if curr_tensor.ndim == 2:
-                        curr_tensor = curr_tensor.unsqueeze(1)
-                        setattr(clean_inputs, tensor_key_name, curr_tensor)
-                    
-                    # (2) [오류 해결] original_sizes를 '파이썬 정수 리스트'로 주입
-                    # 텐서([48000]) 대신 리스트 [48000]을 주면 모델이 확실하게 읽습니다.
-                    setattr(clean_inputs, 'original_sizes', [int(real_len)])
-                    
-                    # (3) 안전장치: attention_mask 생성
-                    if not hasattr(clean_inputs, 'attention_mask'):
-                         mask = torch.ones((1, real_len), device=self.device, dtype=torch.long)
-                         setattr(clean_inputs, 'attention_mask', mask)
-                else:
-                    print(f"[WARN] [{i+1}] 오디오 텐서를 찾지 못했습니다.")
+                    feature_length = audio_length_samples // hop
+                    print(f"[LOG] [{i+1}] hop: {hop}, feature_length: {feature_length}")
+                except Exception as e:
+                    print(f"[LOG] [{i+1}] hop 계산 실패: {e}, 기본값 512 사용")
+                    feature_length = audio_length_samples // 512
+                
+                # 5-3. sizes 텐서 생성 및 주입
+                # model.separate() 내부:
+                #   sizes = self.audio_codec.feature_idx_to_wav_idx(batch.sizes)
+                # 이므로 feature 인덱스 기준 길이를 전달해야 함
+                sizes_tensor = torch.tensor([feature_length], dtype=torch.long, device=self.device)
+                
+                # batch 객체에 sizes 주입 (여러 방식 시도)
+                batch.sizes = sizes_tensor
+                
+                # 호환성을 위해 data 딕셔너리에도 설정
+                if hasattr(batch, 'data') and isinstance(batch.data, dict):
+                    batch.data['sizes'] = sizes_tensor
+                
+                print(f"[LOG] [{i+1}] 주입된 sizes: {sizes_tensor}")
+
+                # 5-4. GPU로 이동
+                batch = batch.to(self.device)
+                
+                # sizes가 GPU로 이동했는지 확인
+                if hasattr(batch, 'sizes') and isinstance(batch.sizes, torch.Tensor):
+                    if batch.sizes.device.type != self.device:
+                        batch.sizes = batch.sizes.to(self.device)
+
+                # 5-5. FP16 변환 (오디오 텐서)
+                if target_dtype == torch.float16:
+                    if hasattr(batch, 'audios'):
+                        if isinstance(batch.audios, torch.Tensor):
+                            batch.audios = batch.audios.half()
+                        elif isinstance(batch.audios, list):
+                            batch.audios = [a.half() if isinstance(a, torch.Tensor) else a for a in batch.audios]
 
                 # 6. 추론
                 with torch.no_grad():
-                    # 이제 clean_inputs는 완벽한 파이썬 객체입니다.
-                    outputs = model.separate(clean_inputs)
+                    outputs = model.separate(batch)
                 
                 # 7. 결과 추출
                 if outputs.target is not None and len(outputs.target) > 0:
                     gen_tensor = outputs.target[0].float().detach().cpu()
                     t_wav = gen_tensor.numpy()
-                    if t_wav.ndim == 2 and t_wav.shape[0] == 1: t_wav = np.squeeze(t_wav)
+                    if t_wav.ndim == 2 and t_wav.shape[0] == 1: 
+                        t_wav = np.squeeze(t_wav)
+                    print(f"[LOG] [{i+1}] target shape: {t_wav.shape}")
                 else:
-                    t_wav = np.zeros((int(chunk_seconds * model_sr),), dtype=np.float32)
+                    t_wav = np.zeros((audio_length_samples,), dtype=np.float32)
+                    print(f"[LOG] [{i+1}] target 없음, 0으로 채움")
 
                 if outputs.residual is not None and len(outputs.residual) > 0:
                     res_tensor = outputs.residual[0].float().detach().cpu()
                     r_wav = res_tensor.numpy()
-                    if r_wav.ndim == 2 and r_wav.shape[0] == 1: r_wav = np.squeeze(r_wav)
+                    if r_wav.ndim == 2 and r_wav.shape[0] == 1: 
+                        r_wav = np.squeeze(r_wav)
                 else:
                     r_wav = np.zeros_like(t_wav)
 
-                # 8. 리샘플링
+                # 8. 리샘플링 (model_sr -> self.sr)
                 if model_sr != self.sr:
                     resampler = torchaudio.transforms.Resample(orig_freq=model_sr, new_freq=self.sr)
                     t_tensor_in = torch.from_numpy(t_wav)
-                    if t_tensor_in.ndim == 1: t_tensor_in = t_tensor_in.unsqueeze(0)
+                    if t_tensor_in.ndim == 1: 
+                        t_tensor_in = t_tensor_in.unsqueeze(0)
                     r_tensor_in = torch.from_numpy(r_wav)
-                    if r_tensor_in.ndim == 1: r_tensor_in = r_tensor_in.unsqueeze(0)
+                    if r_tensor_in.ndim == 1: 
+                        r_tensor_in = r_tensor_in.unsqueeze(0)
 
                     t_wav = resampler(t_tensor_in).squeeze().numpy()
                     r_wav = resampler(r_tensor_in).squeeze().numpy()
@@ -505,9 +486,12 @@ class PromptSeparationWorker(QThread):
                 final_target_parts.append(t_part)
                 final_residual_parts.append(r_part)
 
-                del raw_inputs, clean_inputs, outputs, data_map
-                try: os.remove(chunk_path) 
-                except: pass
+                # 메모리 정리
+                del batch, outputs
+                try: 
+                    os.remove(chunk_path) 
+                except Exception: 
+                    pass
                 
                 if self.device == "cuda": 
                     torch.cuda.empty_cache()
@@ -526,7 +510,8 @@ class PromptSeparationWorker(QThread):
             self.finished.emit(tracks)
 
             del model, processor
-            if self.device == "cuda": torch.cuda.empty_cache()
+            if self.device == "cuda": 
+                torch.cuda.empty_cache()
             gc.collect()
 
         except Exception as e:
