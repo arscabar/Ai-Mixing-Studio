@@ -100,25 +100,7 @@ PyInstaller를 사용하여 **onedir 방식** 실행 파일을 생성합니다.
 
 ---
 
-## ⚠️ 알려진 이슈 (torchaudio 2.9+ / TorchCodec)
-
-### 문제
-
-`torchaudio 2.9+`부터 Load/Save 구현이 **TorchCodec 기반**으로 변경되었습니다.
-현재 TorchCodec의 **Windows 지원이 불완전**하여 실행 시 아래 오류가 발생할 수 있습니다.
-
-* `Could not load libtorchcodec`
-
-### 해결책 (v9 적용)
-
-본 프로젝트는 해당 문제를 방지하기 위해 **`torchaudio.load`를 직접 사용하지 않습니다.**
-대신 아래 방식으로 우회합니다.
-
-* **numpy + soundfile / ffmpeg 기반 로딩 방식 사용**
-
----
-
-## 📁 (참고) 주요 경로 정리
+## 📁 주요 경로 정리
 
 * 모델 캐시:
 
@@ -129,7 +111,3 @@ PyInstaller를 사용하여 **onedir 방식** 실행 파일을 생성합니다.
 * FFmpeg (권장 위치):
 
   * `bin/ffmpeg.exe`
-
-## TODOLIST
-  * prompt를 사용하여 세부 레이어 조정 작업 추가 (sam audio - prompt 레이어 추출 기능 사용)
-  * 자동 자막 세부속성 추가
